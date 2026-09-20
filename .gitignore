@@ -1,0 +1,5 @@
+# Generated dashboards hold a listing of the scanned disk: never publish them.
+reports/
+
+__pycache__/
+*.pyc
