@@ -18,6 +18,7 @@ import classify
 import cleaner
 from classify import Classification
 from scanner import DirNode, ScanResult, display_path
+from version import VERSION
 
 _BS = chr(92)
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -44,8 +45,9 @@ class Dashboard:
 
 
 def write_dashboard(result: ScanResult, dest: str, *, cleanup: Classification,
-                    usage=None, max_items: int = MAX_ITEMS) -> Dashboard:
-    payload, actions = build_payload(result, cleanup, usage, max_items=max_items)
+                    usage=None, health=None, max_items: int = MAX_ITEMS) -> Dashboard:
+    payload, actions = build_payload(result, cleanup, usage, health=health,
+                                     max_items=max_items)
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     # Keeps a file name containing "</script>" from closing the tag early.
     data = data.replace("<", _BS + "u003c")
@@ -65,7 +67,7 @@ def write_dashboard(result: ScanResult, dest: str, *, cleanup: Classification,
 
 
 def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
-                  max_items: int = MAX_ITEMS) -> tuple[dict, dict]:
+                  health=None, max_items: int = MAX_ITEMS) -> tuple[dict, dict]:
     """The dashboard JSON plus the cleanup actions (node id -> Action)."""
     root = result.root
     dirs, files, cutoff = _select(root, max_items, MIN_ITEM)
@@ -148,6 +150,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
 
     meta = {
         "root": root.name,
+        "version": VERSION,
         "sep": os.sep,
         "date": round(result.started_at),
         "elapsed": round(result.elapsed, 1),
@@ -172,6 +175,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
 
     payload = {
         "meta": meta,
+        "health": health or {},
         "nodes": {key: tree[key] for key in ("n", "s", "f", "p", "k", "c")},
         "denied": tree["denied"],
         "rules": rules,

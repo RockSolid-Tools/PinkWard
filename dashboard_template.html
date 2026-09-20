@@ -374,6 +374,17 @@
     border:1px solid color-mix(in srgb,var(--lvc) 45%,transparent)}
   .pill .lvdot{width:15px;height:15px;padding:2px}
 
+  /* ---- disk health ---- */
+  .hp-good{--lvc:var(--good)}
+  .hp-warn{--lvc:var(--warning)}
+  .hp-bad{--lvc:var(--critical)}
+  .hp-unknown{--lvc:var(--neutral)}
+  .h-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;min-width:0}
+  .h-head .ico{color:var(--muted)}
+  .h-note{display:flex;gap:8px;align-items:flex-start;font-size:13px;margin-top:8px;color:var(--ink-2)}
+  .h-note .lvdot{flex:none;margin-top:1px}
+  .h-row{display:flex;align-items:center;gap:8px}
+
   /* ---- deleting from the app ---- */
   .btn.danger{color:#fff;background:var(--critical);border-color:var(--critical);font-weight:600}
   .btn.danger:hover{color:#fff;filter:brightness(1.08)}
@@ -446,6 +457,7 @@
     <button class="tab" role="tab" type="button" data-tab="cleanup">Cleanup</button>
     <button class="tab" role="tab" type="button" data-tab="files">Large files</button>
     <button class="tab" role="tab" type="button" data-tab="types">File types</button>
+    <button class="tab" role="tab" type="button" data-tab="health">Disk health</button>
   </nav>
 
   <section id="tab-explore" role="tabpanel">
@@ -480,6 +492,7 @@
   <section id="tab-cleanup" role="tabpanel" hidden></section>
   <section id="tab-files" role="tabpanel" hidden></section>
   <section id="tab-types" role="tabpanel" hidden></section>
+  <section id="tab-health" role="tabpanel" hidden></section>
 
   <footer class="foot" id="foot"></footer>
 </main>
@@ -516,6 +529,10 @@
   const COUNT = NAME.length, SEP = M.sep;
   const RULES = RAW.rules, CLS = RAW.cls, DENIED = new Set(RAW.denied);
   const CAT = M.cats, LV = M.levels;
+  // What Windows said about the drives. Null when it was not asked or had
+  // nothing to say, and then the tab is not shown at all.
+  const HEALTH = (RAW.health && (RAW.health.error || (RAW.health.disks || []).length))
+    ? RAW.health : null;
   const ACTIONABLE = ["safe", "review", "tool"];
   const STATUS = {safe: "good", review: "warning", tool: "serious"};
   const DIR = 0, FILE = 1, MORE_FILES = 2, MORE_DIRS = 3;
@@ -645,6 +662,7 @@
     copy: '<svg viewBox="0 0 16 16"><rect x="5.2" y="5.2" width="8" height="8.8" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.8 5.2V3.4c0-.7-.5-1.2-1.2-1.2H3.9c-.7 0-1.2.5-1.2 1.2v6.4c0 .7.5 1.2 1.2 1.2h1.3" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>',
     chev: '<svg viewBox="0 0 16 16"><path d="M6 3.5L10.5 8 6 12.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
     search: '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+    disk: '<svg viewBox="0 0 16 16"><rect x="1.6" y="3.4" width="12.8" height="9.2" rx="1.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="11.6" cy="8" r="1.2" fill="currentColor"/><path d="M4.2 6.3h4.2M4.2 9.7h4.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   };
   function icon(name, cls) {
     const s = document.createElement("span");
@@ -753,7 +771,7 @@
   }
 
   // ---- navigation --------------------------------------------------------
-  const TABS = ["explore", "cleanup", "files", "types"];
+  const TABS = ["explore", "cleanup", "files", "types", "health"];
   let cur = 0, sel = null, tab = "explore";
   let sortKey = "size", sortDir = -1, showAll = false, simpleAll = false;
   let view = "simple";
@@ -797,6 +815,7 @@
     return c >= 0 && c < CAT.length ? {cat: c} : null;
   }
   function setTab(t) {
+    if (t === "health" && !HEALTH) t = "explore";
     tab = t;
     for (const b of document.querySelectorAll(".tab")) b.setAttribute("aria-selected", String(b.dataset.tab === t));
     for (const name of TABS) $("tab-" + name).hidden = name !== t;
@@ -1725,6 +1744,132 @@
         h("th", {class: "opt"}, "Folder"), h("th", {class: "opt"}, "What it is"))), body));
   }
 
+  // ---- disk health -------------------------------------------------------
+  // All of this is Windows' own answer, asked for while the disk was being
+  // scanned. PinkWard measures nothing here and changes nothing.
+  function healthPill(level) {
+    const text = {good: "Healthy", warn: "Worth a look", bad: "Needs attention"}[level] || "Unknown";
+    const glyph = level === "good" ? "safe" : level === "unknown" ? "info" : "review";
+    return h("span", {class: "pill hp-" + level}, icon(glyph, "lvdot hp-" + level), text);
+  }
+  function runtime(h0) {
+    const years = h0 / 8760;
+    const long = years >= 1 ? F1.format(years) + (years >= 2 ? " years" : " year")
+      : Math.round(h0 / 24) + " days";
+    return long + " (" + count(h0) + " h)";
+  }
+  function diskCard(d, admin) {
+    const missing = admin ? "not reported" : "needs administrator";
+    const where = d.scanned ? "holds the drive you scanned"
+      : d.letters.length ? "drives " + d.letters.map((l) => l + ":").join(", ")
+      : "no drive letters";
+    const body = h("div", {class: "card-b"});
+    const stats = h("div", {class: "stats"});
+    stat(stats, "Windows check", d.health || "not reported");
+    stat(stats, "Type", [d.media, d.bus, d.spindle ? count(d.spindle) + " rpm" : ""]
+      .filter(Boolean).join(" · ") || "not reported");
+    stat(stats, "Size", human(d.size));
+    stat(stats, "Life left", d.life != null ? d.life + "%" : missing);
+    stat(stats, "Temperature", d.temp != null ? d.temp + " °C" : missing);
+    stat(stats, "Powered on", d.hours != null ? runtime(d.hours) : missing);
+    stat(stats, "Uncorrected errors", (d.readErr == null && d.writeErr == null)
+      ? missing : count((d.readErr || 0) + (d.writeErr || 0)));
+    if (d.starts != null) stat(stats, "Power cycles", count(d.starts));
+    body.append(stats);
+    for (const note of d.notes) {
+      body.append(h("div", {class: "h-note"}, icon("review", "lvdot hp-" + d.level),
+        h("span", null, note)));
+    }
+    if (!d.notes.length && d.level === "good") {
+      body.append(h("div", {class: "h-note"}, icon("safe", "lvdot hp-good"),
+        h("span", null, "Windows sees nothing wrong with this disk.")));
+    }
+    return h("div", {class: "card", style: "margin-bottom:16px"},
+      h("div", {class: "card-h"},
+        h("div", {class: "h-head"}, icon("disk"), h("div", {class: "card-t"}, d.name),
+          healthPill(d.level)),
+        h("div", {class: "card-n"}, where)),
+      body);
+  }
+  function volumesCard(H) {
+    if (!H.volumes.length) return null;
+    const body = h("tbody");
+    for (const v of H.volumes) {
+      const ok = !v.health || v.health === "Healthy";
+      body.append(h("tr", {class: v.scanned ? "sel" : ""},
+        h("td", null, h("div", {class: "h-row"}, h("b", null, v.letter + ":"),
+          h("span", {class: "dim"}, v.label || ""))),
+        h("td", {class: "opt"}, v.fs || "—"),
+        h("td", null, h("span", {class: "h-row"},
+          icon(ok ? "safe" : "review", "lvdot hp-" + (ok ? "good" : "warn")),
+          v.health || "not reported")),
+        h("td", {class: "num"}, human(v.free)),
+        h("td", null, pbar(v.size - v.free, v.size))));
+    }
+    return h("div", {class: "card", style: "margin-bottom:16px"},
+      h("div", {class: "card-h"}, h("div", {class: "card-t"}, "Volumes"),
+        h("div", {class: "card-n"}, "the one you scanned is highlighted")),
+      h("div", {class: "table-wrap"}, h("table", {class: "list"},
+        h("thead", null, h("tr", null, h("th", null, "Drive"), h("th", {class: "opt"}, "Format"),
+          h("th", null, "Windows check"), h("th", {class: "num"}, "Free"), h("th", null, "Used"))),
+        body)));
+  }
+  function eventsCard(H) {
+    const card = h("div", {class: "card"},
+      h("div", {class: "card-h"}, h("div", {class: "card-t"}, "What Windows logged"),
+        h("div", {class: "card-n"}, "storage messages from the last " + H.eventDays + " days")));
+    if (!H.events.length) {
+      card.append(h("div", {class: "card-b dim"},
+        "Nothing: no storage errors or warnings in that time."));
+      return card;
+    }
+    card.append(h("div", {class: "card-b dim"}, (H.seriousEvents
+      ? plural(H.seriousEvents, "message points at a disk problem",
+               "messages point at a disk problem") + "."
+      : "None of them points at a disk problem; most of these are routine noise.") +
+      " Windows writes them in its own language."));
+    const body = h("tbody");
+    for (const e of H.events) {
+      body.append(h("tr", null,
+        h("td", {class: "num"}, e.time),
+        h("td", {class: "opt"}, e.provider + " · " + e.id),
+        h("td", null, h("span", {class: "h-row"},
+          icon(e.serious ? "review" : "info", "lvdot hp-" + (e.serious ? "warn" : "unknown")),
+          e.level)),
+        h("td", {class: "path-cell"}, e.message)));
+    }
+    card.append(h("div", {class: "table-wrap"}, h("table", {class: "list"},
+      h("thead", null, h("tr", null, h("th", {class: "num"}, "When"),
+        h("th", {class: "opt"}, "Source"), h("th", null, "Level"), h("th", null, "Message"))),
+      body)));
+    return card;
+  }
+  RENDER.health = (box) => {
+    const H = HEALTH;
+    box.append(h("p", {class: "intro"},
+      "What Windows itself reports about the drives in this PC. PinkWard measures nothing here " +
+      "and changes nothing: it asks Windows while the scan runs and shows the answer."));
+    if (H.error) {
+      box.append(h("div", {class: "card"}, h("div", {class: "empty"},
+        "Windows did not answer: " + H.error)));
+      return;
+    }
+    for (const d of H.disks) box.append(diskCard(d, H.admin));
+    const vols = volumesCard(H);
+    if (vols) box.append(vols);
+    box.append(eventsCard(H));
+    const notes = h("ul");
+    if (!H.admin) {
+      notes.append(h("li", null, "Wear, temperature and power-on hours are only handed out to an " +
+        "administrator: run PinkWard again with the [A] option to see them."));
+    }
+    notes.append(h("li", null, "These are Windows' own numbers, not a full SMART report. A tool " +
+      "made for that reads every attribute the disk keeps."));
+    notes.append(h("li", null, "A disk can also fail with no warning at all. Backups, not " +
+      "dashboards, are what keep your files."));
+    box.append(h("div", {class: "foot"}, h("div", null, "Worth knowing:"), notes));
+  };
+
   // ---- search ------------------------------------------------------------
   let LOWER = null, hits = [], active = -1;
   function search(q) {
@@ -1800,6 +1945,7 @@
       for (const n of notes) ul.append(h("li", null, n));
       foot.append(h("div", null, "Notes about this scan:"), ul);
     }
+    foot.append(h("div", {style: "margin-top:12px"}, "PinkWard " + (M.version || "")));
   }
   const THEMES = {auto: "Theme: auto", light: "Theme: light", dark: "Theme: dark"};
   let theme = "auto";
@@ -1811,6 +1957,10 @@
     $("theme").textContent = THEMES[theme];
   }
   function setupChrome() {
+    if (!HEALTH) {
+      const btn = document.querySelector('.tab[data-tab="health"]');
+      if (btn) btn.hidden = true;
+    }
     $("theme").addEventListener("click", () => {
       theme = {auto: "light", light: "dark", dark: "auto"}[theme];
       try { localStorage.setItem("pinkward-theme", theme); } catch (e) { /* no storage */ }

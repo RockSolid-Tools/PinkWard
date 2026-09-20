@@ -283,6 +283,10 @@ try {
     New-Item -ItemType Directory -Path $app -Force | Out-Null
     Copy-Item -Path (Join-Path $entry.DirectoryName "*") -Destination $app -Recurse -Force
     Remove-Item $zip, $unzipped -Recurse -Force -ErrorAction SilentlyContinue
+    $versionFile = Join-Path $app "VERSION"
+    if (Test-Path $versionFile) {
+        Write-Note ("version " + (Get-Content $versionFile -TotalCount 1).Trim())
+    }
 
     # --- Python ------------------------------------------------------------
     $python = $null

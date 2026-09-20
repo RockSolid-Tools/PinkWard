@@ -26,9 +26,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import classify
 import dashboard
+import health as health_check
 import report as rep
 import scanner
 import server
+from version import VERSION
 
 DEFAULT_EXCLUDES = ["$Recycle.Bin", "System Volume Information"]
 REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
@@ -53,6 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__.split("Examples:")[1] if "Examples:" in __doc__ else None,
     )
+    parser.add_argument("--version", action="version", version=f"PinkWard {VERSION}")
     parser.add_argument("path", nargs="?", default=None,
                         help="folder or drive to scan (the current drive by default)")
     parser.add_argument("-t", "--top", type=int, default=20,
@@ -84,6 +87,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="count online-only files (OneDrive) as taking up space")
     parser.add_argument("--no-report", action="store_true",
                         help="skip the console report: only the dashboard link")
+    parser.add_argument("--no-health", action="store_true",
+                        help="do not ask Windows about the health of the drives")
     parser.add_argument("--no-color", action="store_true", help="output without color")
     parser.add_argument("--quiet", action="store_true", help="no progress line")
     return parser
@@ -132,6 +137,10 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         usage = None
 
+    # Windows is asked about the drives on another thread, so its answer is
+    # ready by the time the scan finishes and costs no extra wait.
+    probe = health_check.Probe(enabled=not args.no_health and not args.no_dashboard).start()
+
     print(f"\n  Scanning {target} ...", file=sys.stderr)
     try:
         result = scanner.scan(
@@ -169,7 +178,8 @@ def main(argv: list[str] | None = None) -> int:
 
     dest = os.path.abspath(args.dashboard or default_dashboard_path(target))
     try:
-        dash = dashboard.write_dashboard(result, dest, cleanup=cleanup, usage=usage)
+        dash = dashboard.write_dashboard(result, dest, cleanup=cleanup, usage=usage,
+                                         health=probe.result(target))
     except OSError as exc:
         print(f"  Could not save the dashboard: {exc}\n", file=sys.stderr)
         return 1

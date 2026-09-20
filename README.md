@@ -105,6 +105,8 @@ the output redirected, or with `--no-serve`, only the copy is written.
 | `--logical` | Use the logical size instead of the real size on disk |
 | `--count-cloud` | Count OneDrive "online only" files as taking up space |
 | `--follow-links` | Follow symlinks and junctions (may count the same data twice) |
+| `--no-report` | Console keeps only the dashboard link |
+| `--no-health` | Do not ask Windows about the health of the drives |
 | `--no-color`, `--quiet` | Output without color / without the progress line |
 
 ## What you get
@@ -149,6 +151,11 @@ theme:
 - **Large files**: the biggest files in the whole scan.
 - **File types**: pick a type (games, video, programs...) or an extension and
   see its largest files; click one to jump to its folder.
+- **Disk health**: what Windows itself reports about the drives in this PC.
+  Its own health check, the volume check and the storage messages it logged in
+  the last 30 days. Wear, temperature and power-on hours only show up when
+  PinkWard runs as administrator, because Windows hands those to an elevated
+  process alone. Nothing here is measured or changed by PinkWard.
 - **Search** (press `/`) by folder or file name.
 
 To keep it from growing without limit it includes the ~120,000 largest items
@@ -252,6 +259,9 @@ and what you see in a file's properties.
 | `pinkward.py` | Entry point and command-line options |
 | `scanner.py` | Tree walk and size measurement |
 | `classify.py` | What everything is: file types and known folders to clean |
+| `health.py` | Asks Windows about the drives: health, wear and logged errors |
+| `VERSION`, `version.py` | The version number, in one place |
+| `CHANGELOG.md` | What changed in each version |
 | `report.py` | Terminal report |
 | `dashboard.py` | Builds the dashboard out of the scan |
 | `dashboard_template.html` | Dashboard template (HTML, CSS and JS) |
