@@ -82,6 +82,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="use the logical size instead of the real size on disk")
     parser.add_argument("--count-cloud", action="store_true",
                         help="count online-only files (OneDrive) as taking up space")
+    parser.add_argument("--no-report", action="store_true",
+                        help="skip the console report: only the dashboard link")
     parser.add_argument("--no-color", action="store_true", help="output without color")
     parser.add_argument("--quiet", action="store_true", help="no progress line")
     return parser
@@ -130,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError:
         usage = None
 
-    print(f"\nScanning {target} ...", file=sys.stderr)
+    print(f"\n  Scanning {target} ...", file=sys.stderr)
     try:
         result = scanner.scan(
             target,
@@ -146,17 +148,21 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
     cleanup = classify.classify(result.root)
-    rep.print_report(result, top=args.top, depth=args.depth, style=style,
-                     cleanup=cleanup)
 
-    if usage:
-        used_pct = usage.used / usage.total * 100 if usage.total else 0
-        print(style.bold("  DRIVE"))
-        print(f"  {rep.human(usage.used)} used of {rep.human(usage.total)} "
-              f"({used_pct:.0f}%)  |  {rep.human(usage.free)} free")
-        covered = result.root.total / usage.used * 100 if usage.used else 0
-        print(style.dim(f"  What was scanned covers {covered:.0f}% of the space in "
-                        f"use on this drive.\n"))
+    # The dashboard says all of this far better; with --no-report the console
+    # keeps only the link to it.
+    if not args.no_report:
+        rep.print_report(result, top=args.top, depth=args.depth, style=style,
+                         cleanup=cleanup)
+
+        if usage:
+            used_pct = usage.used / usage.total * 100 if usage.total else 0
+            print(style.bold("  DRIVE"))
+            print(f"  {rep.human(usage.used)} used of {rep.human(usage.total)} "
+                  f"({used_pct:.0f}%)  |  {rep.human(usage.free)} free")
+            covered = result.root.total / usage.used * 100 if usage.used else 0
+            print(style.dim(f"  What was scanned covers {covered:.0f}% of the space in "
+                            f"use on this drive.\n"))
 
     if args.no_dashboard:
         return 0
@@ -194,8 +200,11 @@ def main(argv: list[str] | None = None) -> int:
     print("  " + style.cyan(style.link(url)))
     print(style.dim("  Ctrl+click to open it. While PinkWard stays open you can delete "
                     "from there\n  whatever is marked as safe."))
-    print(style.dim("  Copy to look at later (no deleting): ") +
-          style.link(file_url, dest))
+    # The saved copy is only worth mentioning when it outlives the run: with
+    # --no-report PinkWard is being run from a folder that gets wiped.
+    if not args.no_report:
+        print(style.dim("  Copy to look at later (no deleting): ") +
+              style.link(file_url, dest))
     if args.open:
         webbrowser.open(url)
     print("\n  " + style.bold("Press Enter to close the dashboard and quit."))

@@ -18,16 +18,35 @@ From a PowerShell window (no administrator rights needed):
 irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1 | iex
 ```
 
-That downloads PinkWard into a temporary folder, plus a portable Python if
-this PC has none (pinned to one version and checked against its SHA256),
-scans the Windows drive and opens the dashboard. When you press Enter in the
-console it deletes the whole folder: nothing is installed and nothing is left
-behind, not the report and not the cleanup log either.
-
-To pass options, use the form PowerShell provides for remote scripts:
+It asks first:
 
 ```
-& ([scriptblock]::Create((irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1))) -Path D:\
+  PinkWard
+  what is taking up your disk, and what is safe to delete
+
+   > [1]  C:   Windows        217.9 GB free of 930.5 GB
+     [2]  D:   Games          412.0 GB free of 2.0 TB
+     [F]  another folder...
+
+     [A]  run as administrator .... off   scans system folders too
+     [P]  bring its own Python .... off   ignores the one installed here
+     [O]  open the browser ........ on    the link is printed either way
+     [K]  keep the temp folder .... off   normally everything is wiped
+
+   Enter to start  ·  number or letter to change  ·  Q to quit
+```
+
+Pick a drive, flip whatever you need and press Enter. PinkWard downloads
+itself into a temporary folder, plus a portable Python if this PC has none
+(pinned to one version and checked against its SHA256), scans, and opens the
+dashboard. The console stays out of the way: it only prints the link. When
+you press Enter again it deletes the whole folder, so nothing is installed
+and nothing is left behind, not the report and not the cleanup log either.
+
+To skip the menu, pass what you want:
+
+```
+iex "& { $(irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1) } -Path 'D:\'"
 ```
 
 | Option | What it does |
@@ -37,6 +56,10 @@ To pass options, use the form PowerShell provides for remote scripts:
 | `-Portable` | Always use the portable Python, even if this PC already has one |
 | `-NoOpen` | Do not open the browser, just print the link |
 | `-Keep` | Keep the temporary folder, for troubleshooting |
+| `-Report` | Also print the full report in the console |
+
+Passing any of them skips the menu, which is also what happens when the
+console cannot read keys (a script, a redirected terminal).
 
 Two things worth knowing: it runs out of `%TEMP%` and it deletes files, so a
 strict antivirus may take a second look, and on a locked-down work PC it can

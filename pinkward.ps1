@@ -5,16 +5,17 @@
     when you are done.
 
 .DESCRIPTION
-    Downloads PinkWard and a portable Python into a temporary folder, scans the
-    drive, opens the dashboard in your browser and, once you press Enter in the
-    console, deletes the whole temporary folder. Nothing is installed, nothing
-    is left behind, and no administrator rights are needed.
+    Downloads PinkWard and, if this PC has no Python, a portable one into a
+    temporary folder, scans the drive you pick and opens the dashboard in your
+    browser. Once you press Enter in the console it deletes the whole temporary
+    folder. Nothing is installed and nothing is left behind.
 
     Run it with:
-        irm https://<your-host>/pinkward.ps1 | iex
+        irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1 | iex
 
-    With options (this is how you pass arguments to a remote script):
-        & ([scriptblock]::Create((irm https://<your-host>/pinkward.ps1))) -Path D:\
+    It then asks which drive to scan and lets you turn the options on or off.
+    To skip the menu, pass what you want:
+        iex "& { $(irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1) } -Path 'D:\'"
 
 .PARAMETER Path
     Drive or folder to scan. Defaults to the Windows drive.
@@ -36,6 +37,10 @@
 
 .PARAMETER Keep
     Keep the temporary folder instead of deleting it (for troubleshooting).
+
+.PARAMETER Report
+    Also print the full report in the console. Off by default: the dashboard
+    says all of it better.
 #>
 [CmdletBinding()]
 param(
@@ -46,7 +51,8 @@ param(
     [switch]$Portable,
     [switch]$Admin,
     [switch]$NoOpen,
-    [switch]$Keep
+    [switch]$Keep,
+    [switch]$Report
 )
 
 $ErrorActionPreference = "Stop"
@@ -129,9 +135,107 @@ function Remove-Stale {
     }
 }
 
+# --- menu (the tests pull this block out and drive it with fake keys) --------
+function Format-Size([double]$bytes) {
+    $units = "B", "KB", "MB", "GB", "TB"
+    $i = 0
+    while ($bytes -ge 1024 -and $i -lt 4) { $bytes /= 1024; $i++ }
+    # Invariant culture, so it reads the same as the rest of PinkWard
+    # instead of following the machine's decimal separator.
+    [string]::Format([cultureinfo]::InvariantCulture, "{0:N1} {1}", $bytes, $units[$i])
+}
+
+function Read-Choices {
+    <#
+        The menu: pick a drive, flip the options, Enter to start. Returns the
+        choices, or $null if the user quits. ReadKey is a parameter so the
+        tests can feed it keystrokes.
+    #>
+    param([hashtable]$opt, [scriptblock]$ReadKey = { [Console]::ReadKey($true) })
+    $drives = @([IO.DriveInfo]::GetDrives() |
+        Where-Object { $_.IsReady -and $_.DriveType -eq "Fixed" })
+    if (-not $drives.Count) { return $opt }
+    $sel = 0
+    for ($i = 0; $i -lt $drives.Count; $i++) {
+        if ($drives[$i].Name -eq "$env:SystemDrive\") { $sel = $i }
+    }
+    $onOff = { param($b) if ($b) { "on " } else { "off" } }
+
+    while ($true) {
+        Write-Host ""
+        Write-Host "  PinkWard" -ForegroundColor White
+        Write-Host "  what is taking up your disk, and what is safe to delete" -ForegroundColor DarkGray
+        Write-Host ""
+        for ($i = 0; $i -lt $drives.Count; $i++) {
+            $d = $drives[$i]
+            $here = (-not $opt.Path) -and ($i -eq $sel)
+            $label = if ($d.VolumeLabel) { $d.VolumeLabel } else { "" }
+            Write-Host ("   {0} [{1}]  {2,-3} {3,-14} {4} free of {5}" -f `
+                    $(if ($here) { ">" } else { " " }), ($i + 1), $d.Name.TrimEnd("\"),
+                    $label, (Format-Size $d.AvailableFreeSpace), (Format-Size $d.TotalSize)
+            ) -ForegroundColor $(if ($here) { "White" } else { "Gray" })
+        }
+        if ($opt.Path) {
+            Write-Host ("   > [F]  " + $opt.Path) -ForegroundColor White
+        } else {
+            Write-Host "     [F]  another folder..." -ForegroundColor Gray
+        }
+        Write-Host ""
+        Write-Host ("     [A]  run as administrator .... " + (& $onOff $opt.Admin) +
+                    "   scans system folders too") -ForegroundColor Gray
+        Write-Host ("     [P]  bring its own Python .... " + (& $onOff $opt.Portable) +
+                    "   ignores the one installed here") -ForegroundColor Gray
+        Write-Host ("     [O]  open the browser ........ " + (& $onOff (-not $opt.NoOpen)) +
+                    "   the link is printed either way") -ForegroundColor Gray
+        Write-Host ("     [K]  keep the temp folder .... " + (& $onOff $opt.Keep) +
+                    "   normally everything is wiped") -ForegroundColor Gray
+        Write-Host ""
+        Write-Host "   Enter to start  ·  number or letter to change  ·  Q to quit" -ForegroundColor DarkGray
+
+        $key = & $ReadKey
+        $ch = "$($key.KeyChar)".ToUpper()
+        if ($key.Key -eq "Enter") {
+            if (-not $opt.Path) { $opt.Path = $drives[$sel].Name }
+            return $opt
+        }
+        if ($key.Key -eq "Escape" -or $ch -eq "Q") { return $null }
+        if ($ch -match "^[1-9]$") {
+            $n = [int]$ch
+            if ($n -le $drives.Count) { $sel = $n - 1; $opt.Path = $null }
+        } elseif ($ch -eq "A") { $opt.Admin = -not $opt.Admin }
+        elseif ($ch -eq "P") { $opt.Portable = -not $opt.Portable }
+        elseif ($ch -eq "O") { $opt.NoOpen = -not $opt.NoOpen }
+        elseif ($ch -eq "K") { $opt.Keep = -not $opt.Keep }
+        elseif ($ch -eq "F") {
+            Write-Host ""
+            $typed = Read-Host "   Folder to scan"
+            $typed = $typed.Trim('"').Trim()
+            if ($typed -and (Test-Path -LiteralPath $typed)) { $opt.Path = $typed }
+            elseif ($typed) { Write-Warning "   Not a folder: $typed" }
+        }
+    }
+}
+# --- end menu ---------------------------------------------------------------
+
 if ($env:OS -ne "Windows_NT") { throw "PinkWard only runs on Windows." }
 if ($Source -like "*CHANGE-ME*") {
     throw "Set -Source to the zip holding PinkWard (or edit the default in this script)."
+}
+
+# With no options given, and a console that can read keys, ask.
+$given = @("Path", "Admin", "Portable", "NoOpen", "Keep", "Report") |
+    Where-Object { $PSBoundParameters.ContainsKey($_) }
+$canAsk = $false
+try { $canAsk = -not [Console]::IsInputRedirected } catch { $canAsk = $false }
+if (-not $given -and $canAsk) {
+    $choice = Read-Choices @{ Path = $null; Admin = $false; Portable = $false;
+                              NoOpen = $false; Keep = $false }
+    if ($null -eq $choice) { Write-Host ""; return }
+    $Path = $choice.Path
+    $Admin = [switch]$choice.Admin
+    $Portable = [switch]$choice.Portable
+    $NoOpen = [switch]$choice.NoOpen
+    $Keep = [switch]$choice.Keep
 }
 
 if ($Admin -and -not (Test-Admin)) {
@@ -140,6 +244,8 @@ if ($Admin -and -not (Test-Admin)) {
     $inner = "& ([scriptblock]::Create((irm '$BootstrapUrl'))) -Path '$Path' -Source '$Source'"
     if ($Portable) { $inner += " -Portable" }
     if ($NoOpen) { $inner += " -NoOpen" }
+    if ($Keep) { $inner += " -Keep" }
+    if ($Report) { $inner += " -Report" }
     Start-Process powershell -Verb RunAs -ArgumentList @(
         "-NoProfile", "-NoExit", "-Command", $inner)
     return
@@ -156,7 +262,6 @@ Set-Content -Path (Join-Path $work "owner.pid") -Value $PID -Encoding ASCII
 $app = Join-Path $work "app"
 
 Write-Host ""
-Write-Host "  PinkWard" -ForegroundColor White
 Write-Note "nothing is installed; everything runs from $work"
 Write-Host ""
 
@@ -202,8 +307,6 @@ try {
     }
 
     # --- run ---------------------------------------------------------------
-    Write-Step "Scanning $Path ..."
-    Write-Host ""
     # One flat array, built with +=, so splatting never splits an argument
     # ("-3" passed as a bare string would reach python.exe as "-" and "3",
     # and "python -" reads the program from stdin and hangs).
@@ -212,6 +315,7 @@ try {
     $runArgs += (Join-Path $app "pinkward.py")
     $runArgs += $Path
     if (-not $NoOpen) { $runArgs += "--open" }
+    if (-not $Report) { $runArgs += "--no-report" }
     & $python[0] @runArgs
     $code = $LASTEXITCODE
 } finally {
