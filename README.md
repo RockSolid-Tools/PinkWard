@@ -142,9 +142,20 @@ theme:
     how much can be freed in there and the list of what takes up the most,
     largest first, with bars and plain-language tags (*Safe to delete*,
     *Worth a look*, *Leave alone*...).
-  - **Advanced**: a nested treemap coloured by whether things can be cleaned,
-    a detail panel (what it is, what it holds) and the full sortable table,
-    with a clickable path to walk back up.
+  - **Advanced**: a nested treemap, a detail panel and the full sortable
+    table, with a clickable path to walk back up. The colours of the map can
+    mean three things, and you pick which above it:
+    - *What it is*: whether it can be cleaned.
+    - *Content*: which kind of file fills each block (games, video,
+      programs...), so a drive full of games reads at a glance.
+    - *Age*: when what is inside was last written, from this month to over
+      two years, on one blue ramp where darker means older.
+
+    Hovering a row in the table outlines its block on the map, and the other
+    way round. The detail panel says what can be cleaned under the folder you
+    are looking at, how much of it nobody has touched in over a year, and how
+    its contents split by age; the table has a sortable column for that too.
+    Blocks too small to read are folded into one "N smaller items".
 - **Cleanup**: everything recognised, grouped, with what it is, the safe way
   to clean it and each location (*Show* takes you there; *Delete* on what the
   app can clean itself).

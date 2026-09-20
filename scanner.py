@@ -48,6 +48,13 @@ NTFS_RESIDENT_LIMIT = 700
 TYPE_TOP = 100
 EXT_TOP = 20
 
+# When was it last touched. The bands are ordered, newest first, and the
+# dashboard colors and sorts by them, so the order is part of the format.
+AGE_BANDS = ("This month", "1 to 6 months", "6 to 12 months", "1 to 2 years",
+             "Over 2 years")
+N_AGES = len(AGE_BANDS)
+_AGE_CUTS = (30, 182, 365, 730)   # days, matching the bands above
+
 _GetCompressedFileSizeW = ctypes.windll.kernel32.GetCompressedFileSizeW
 _GetCompressedFileSizeW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(wintypes.DWORD)]
 _GetCompressedFileSizeW.restype = wintypes.DWORD
@@ -59,7 +66,7 @@ class DirNode:
 
     __slots__ = ("name", "parent", "children", "own_size", "own_logical",
                  "own_files", "total", "total_logical", "total_files",
-                 "big_files", "denied", "cats")
+                 "big_files", "denied", "cats", "ages")
 
     def __init__(self, name: str, parent: "DirNode | None") -> None:
         self.name = name
@@ -71,11 +78,14 @@ class DirNode:
         self.total = 0           # bytes on disk, recursive
         self.total_logical = 0   # logical bytes, recursive
         self.total_files = 0
-        self.big_files: list[tuple[int, str]] = []  # bounded heap (size, name)
+        # bounded heap of (size, name, age band)
+        self.big_files: list[tuple[int, str, int]] = []
         self.denied = False
-        # Bytes per content category (classify.CATEGORIES). After the second
-        # pass it is recursive, like `total`. None when there are no files.
+        # Bytes per content category (classify.CATEGORIES) and per age band.
+        # After the second pass both are recursive, like `total`. None when
+        # there are no files.
         self.cats: array | None = None
+        self.ages: array | None = None
 
     def path(self) -> str:
         parts = [self.name]
@@ -196,6 +206,9 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
     result.measure = "logical" if logical else "disk"
     start = time.monotonic()
     zero_cats = [0] * N_CATEGORIES
+    zero_ages = [0] * N_AGES
+    now = time.time()
+    age_cuts = tuple(now - days * 86400 for days in _AGE_CUTS)
     ext_category = EXT_CATEGORY.get
     top_by_cat, top_by_ext = result.top_by_cat, result.top_by_ext
     tick = itertools.count()   # heap tie-breaker: nodes are never compared
@@ -330,6 +343,24 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
                     cats = node.cats = array("q", zero_cats)
                 cats[cat] += size
 
+                # When it was last written. A clock ahead of us lands in the
+                # newest band rather than breaking the order.
+                when = st.st_mtime
+                if when >= age_cuts[0]:
+                    band = 0
+                elif when >= age_cuts[1]:
+                    band = 1
+                elif when >= age_cuts[2]:
+                    band = 2
+                elif when >= age_cuts[3]:
+                    band = 3
+                else:
+                    band = 4
+                ages = node.ages
+                if ages is None:
+                    ages = node.ages = array("q", zero_ages)
+                ages[band] += size
+
                 if size:
                     # Biggest ones per type and extension, for the dashboard.
                     heap = top_by_cat[cat]
@@ -342,7 +373,7 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
                         _push_bounded(heap, (size, next(tick), entry.name, node), EXT_TOP)
 
                 if size >= min_listed_file:
-                    _push_bounded(node.big_files, (size, entry.name), files_per_dir)
+                    _push_bounded(node.big_files, (size, entry.name, band), files_per_dir)
                     _push_bounded(result.top_files, (size, entry.path), top_files)
 
     # Pass 2: iterative post-order to push the totals upwards.
@@ -358,6 +389,7 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
         total_logical = node.own_logical
         total_files = node.own_files
         cats = node.cats
+        ages = node.ages
         for child in node.children:
             total += child.total
             total_logical += child.total_logical
@@ -370,6 +402,14 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
                     for i, value in enumerate(child_cats):
                         if value:
                             cats[i] += value
+            child_ages = child.ages
+            if child_ages is not None:
+                if ages is None:
+                    ages = node.ages = array("q", child_ages)
+                else:
+                    for i, value in enumerate(child_ages):
+                        if value:
+                            ages[i] += value
         node.total = total
         node.total_logical = total_logical
         node.total_files = total_files

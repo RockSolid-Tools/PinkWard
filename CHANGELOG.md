@@ -16,6 +16,15 @@ What changed in each version of PinkWard. The number lives in `VERSION`.
   runs as administrator, because Windows only hands those to an elevated
   process. The query runs while the disk is being scanned, so it costs no
   extra time, and PinkWard neither measures nor changes anything there.
+- **Age**: the scan now records when each file was last written and adds it up
+  per folder, in five bands from "this month" to "over 2 years". It costs
+  nothing to collect (the scan already reads that) and it answers the question
+  size alone cannot: what is big *and* cold.
+- The treemap can be coloured three ways, with a switch above it: what it is
+  (can it be cleaned), content (which kind of file fills it) or age. The
+  legend follows the choice, and the choice is remembered.
+- The map and the table below it light up together: hovering a row outlines
+  its block, and the other way round.
 - `--no-report` and `--no-health` on the program, `-Report` on the launcher,
   and `--version`.
 - This changelog and the `VERSION` file.
@@ -24,6 +33,12 @@ What changed in each version of PinkWard. The number lives in `VERSION`.
 
 - The console stays quiet: the one-line command no longer prints the whole
   report, only the link to the dashboard. `-Report` brings it back.
+- The advanced view stops drawing blocks too small to read: the tail becomes
+  one "N smaller items" block. Long names are shortened in the middle
+  (`e000a9dd…1.nvph`), where the telling part usually is.
+- The detail panel says what can be cleaned under the folder you are looking
+  at, how much of it has not been touched in over a year, and when what is
+  inside was last written. The table gained a sortable column for the same.
 - The launcher no longer offers a "copy to look at later" that its own cleanup
   was about to delete.
 - Sizes in the menu use a dot as the decimal mark, like the rest of PinkWard,

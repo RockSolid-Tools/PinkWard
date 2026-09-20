@@ -17,6 +17,8 @@
     --c5:#008300; --c6:#4a3aa7; --c7:#e34948; --c8:#898781;
     --tile:#e7e6e0; --tile-file:#efeee9; --tile-rest:#f4f3ef; --tile-frame:#d3d2cb; --tile-frame2:#dddcd5;
     --tint:26%; --tint-frame:46%; --tint-frame2:36%;
+    /* age bands, newest to oldest: one hue, light to dark (ordinal ramp) */
+    --age0:#86b6ef; --age1:#5598e7; --age2:#2a78d6; --age3:#1c5cab; --age4:#104281;
     --shadow:0 1px 2px rgba(11,11,11,.05);
     --pop:0 10px 30px rgba(11,11,11,.16);
   }
@@ -30,6 +32,7 @@
       --c5:#008300; --c6:#9085e9; --c7:#e66767; --c8:#898781;
       --tile:#2c2c2a; --tile-file:#252524; --tile-rest:#212120; --tile-frame:#43433f; --tile-frame2:#373734;
       --tint:34%; --tint-frame:56%; --tint-frame2:45%;
+      --age0:#9ec5f4; --age1:#6da7ec; --age2:#3987e5; --age3:#256abf; --age4:#184f95;
       --shadow:none;
       --pop:0 10px 30px rgba(0,0,0,.55);
     }
@@ -43,6 +46,7 @@
     --c5:#008300; --c6:#9085e9; --c7:#e66767; --c8:#898781;
     --tile:#2c2c2a; --tile-file:#252524; --tile-rest:#212120; --tile-frame:#43433f; --tile-frame2:#373734;
     --tint:34%; --tint-frame:56%; --tint-frame2:45%;
+    --age0:#9ec5f4; --age1:#6da7ec; --age2:#3987e5; --age3:#256abf; --age4:#184f95;
     --shadow:none;
     --pop:0 10px 30px rgba(0,0,0,.55);
   }
@@ -187,6 +191,9 @@
   .tile.nest.d2.lv-tool{background:color-mix(in srgb,var(--serious) var(--tint-frame2),var(--surface))}
   .tile:hover:not(:has(.tile:hover)){outline:2px solid var(--ink);outline-offset:-2px;z-index:1}
   .tile.sel{outline:2px solid var(--accent);outline-offset:-2px;z-index:1}
+  /* the row and the block under the pointer light up together */
+  .tile.hl{outline:2px solid var(--accent);outline-offset:-2px;z-index:2}
+  .list tr.hl{background:color-mix(in srgb,var(--accent) 10%,transparent)}
   .tl{display:flex;align-items:center;gap:5px;padding:5px 7px 0;font-size:12px;font-weight:600;
     line-height:1.3;white-space:nowrap;overflow:hidden}
   .tl>span:last-child,.nest-h>.nt{overflow:hidden;text-overflow:ellipsis}
@@ -311,6 +318,8 @@
   .ex-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:10px 16px;
     margin-bottom:12px}
   .ex-bar .crumbs{margin-bottom:0}
+  .ex-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px}
+  .ex-tools .lbl{font-size:12px;color:var(--muted)}
   .seg{display:inline-flex;gap:2px;padding:3px;border:1px solid var(--border);border-radius:10px;
     background:var(--surface)}
   .seg button{border:0;background:none;padding:5px 14px;border-radius:7px;cursor:pointer;
@@ -463,11 +472,22 @@
   <section id="tab-explore" role="tabpanel">
     <div class="ex-bar">
       <div class="crumbs" id="crumbs"></div>
-      <div class="seg" id="viewSeg" role="group" aria-label="Explorer view">
-        <button type="button" data-view="simple" aria-pressed="true"
-                title="The essentials: what takes up the most and what can be cleaned">Simple</button>
-        <button type="button" data-view="advanced" aria-pressed="false"
-                title="Block map, details and the full table">Advanced</button>
+      <div class="ex-tools">
+        <span class="lbl" id="paintLabel" hidden>Colour by</span>
+        <div class="seg" id="paintSeg" role="group" aria-label="What the colours mean" hidden>
+          <button type="button" data-paint="level" aria-pressed="true"
+                  title="Whether it can be cleaned">What it is</button>
+          <button type="button" data-paint="type" aria-pressed="false"
+                  title="What kind of files it holds">Content</button>
+          <button type="button" data-paint="age" aria-pressed="false"
+                  title="How long since it was last touched">Age</button>
+        </div>
+        <div class="seg" id="viewSeg" role="group" aria-label="Explorer view">
+          <button type="button" data-view="simple" aria-pressed="true"
+                  title="The essentials: what takes up the most and what can be cleaned">Simple</button>
+          <button type="button" data-view="advanced" aria-pressed="false"
+                  title="Block map, details and the full table">Advanced</button>
+        </div>
       </div>
     </div>
     <div id="simple" class="simple"></div>
@@ -526,6 +546,7 @@
   // ---- data --------------------------------------------------------------
   const M = RAW.meta, T = RAW.nodes;
   const NAME = T.n, SIZE = T.s, FILES = T.f, PARENT = T.p, KIND = T.k, CATS = T.c;
+  const AGES = T.a || [], AGE = M.ages || [];
   const COUNT = NAME.length, SEP = M.sep;
   const RULES = RAW.rules, CLS = RAW.cls, DENIED = new Set(RAW.denied);
   const CAT = M.cats, LV = M.levels;
@@ -629,6 +650,36 @@
     return best;
   }
   const catColor = (c) => "var(--c" + c + ")";
+
+  // ---- age: when what is inside was last written --------------------------
+  // Same shape as the content mix: pairs for folders, one band for a file.
+  const ageColor = (b) => "var(--age" + b + ")";
+  function ageComp(i) {
+    const a = AGES[i];
+    if (KIND[i] === DIR) {
+      const out = [];
+      if (a) for (let j = 0; j < a.length; j += 2) out.push([a[j], a[j + 1]]);
+      return out;
+    }
+    if (KIND[i] === FILE && a != null && a >= 0) return [[a, SIZE[i]]];
+    return [];
+  }
+  function mainAge(i) {
+    let best = -1, bestSize = 0;
+    for (const [b, v] of ageComp(i)) if (v > bestSize) { bestSize = v; best = b; }
+    return best;
+  }
+  // Share of the bytes in here that nobody has touched for over a year.
+  function coldShare(i) {
+    let cold = 0, all = 0;
+    for (const [b, v] of ageComp(i)) { all += v; if (b >= 3) cold += v; }
+    return all ? cold / all : -1;
+  }
+  function coldBytes(i) {
+    let cold = 0;
+    for (const [b, v] of ageComp(i)) if (b >= 3) cold += v;
+    return cold;
+  }
 
   // ---- DOM ---------------------------------------------------------------
   function h(tag, attrs, ...children) {
@@ -776,6 +827,11 @@
   let sortKey = "size", sortDir = -1, showAll = false, simpleAll = false;
   let view = "simple";
   try { view = localStorage.getItem("pinkward-view") === "advanced" ? "advanced" : "simple"; } catch (e) { view = "simple"; }
+  let paint = "level";   // what the colours of the map mean
+  try {
+    const saved = localStorage.getItem("pinkward-paint");
+    if (saved === "type" || saved === "age") paint = saved;
+  } catch (e) { paint = "level"; }
   let typeSel = null;   // {cat: n}, {ext: ".mp4"} or {all: true}
   const rendered = {};
 
@@ -903,6 +959,12 @@
     for (const b of document.querySelectorAll("#viewSeg button")) {
       b.setAttribute("aria-pressed", String(b.dataset.view === view));
     }
+    for (const b of document.querySelectorAll("#paintSeg button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.paint === paint));
+    }
+    // The colour switch only means anything next to the map.
+    $("paintSeg").hidden = view !== "advanced";
+    $("paintLabel").hidden = view !== "advanced";
     $("simple").hidden = view !== "simple";
     $("advanced").hidden = view !== "advanced";
     if (view === "simple") {
@@ -918,6 +980,16 @@
     view = v;
     try { localStorage.setItem("pinkward-view", v); } catch (e) { /* no storage */ }
     renderExplorer();
+  }
+  function setPaint(p) {
+    if (p === paint) return;
+    paint = p;
+    try { localStorage.setItem("pinkward-paint", p); } catch (e) { /* no storage */ }
+    for (const b of document.querySelectorAll("#paintSeg button")) {
+      b.setAttribute("aria-pressed", String(b.dataset.paint === paint));
+    }
+    renderMap();
+    renderList();
   }
   // Clickable path: every folder takes you to it.
   function appendTrail(box, i) {
@@ -954,13 +1026,13 @@
     const s2 = side * side, a2 = area * area;
     return Math.max(s2 * mx / a2, a2 / (s2 * mn));
   }
-  function squarify(ids, x, y, w, ht) {
+  function squarify(items, x, y, w, ht) {
     const out = [];
     let total = 0;
-    for (const i of ids) total += SIZE[i];
+    for (const it of items) total += it.v;
     if (total <= 0 || w <= 0 || ht <= 0) return out;
     const scale = w * ht / total;
-    let rest = ids.map((i) => ({i, a: SIZE[i] * scale}));
+    let rest = items.map((it) => ({it, a: it.v * scale}));
     let rx = x, ry = y, rw = w, rh = ht, guard = 0;
     while (rest.length && guard++ < 10000) {
       const side = Math.min(rw, rh);
@@ -979,8 +1051,8 @@
       let off = horizontal ? rx : ry;
       for (const r of row) {
         const span = r.a / thick;
-        out.push(horizontal ? {i: r.i, x: off, y: ry, w: span, h: thick}
-                            : {i: r.i, x: rx, y: off, w: thick, h: span});
+        out.push(horizontal ? {it: r.it, x: off, y: ry, w: span, h: thick}
+                            : {it: r.it, x: rx, y: off, w: thick, h: span});
         off += span;
       }
       if (horizontal) { ry += thick; rh -= thick; } else { rx += thick; rw -= thick; }
@@ -991,37 +1063,116 @@
   // How many levels can be drawn nested (children, grandchildren...). In
   // practice size decides: a block only nests if its contents fit inside.
   const NEST_LEVELS = 6;
+  // Blocks under about 10x11 px say nothing and cannot be clicked: the tail
+  // of small things becomes one "N smaller items" block instead of confetti.
+  const MIN_TILE_AREA = 110;
+  function layout(ids, w, ht) {
+    let total = 0;
+    for (const i of ids) total += SIZE[i];
+    if (total <= 0 || w <= 0 || ht <= 0) return [];
+    const area = w * ht;
+    const items = [];
+    let restSize = 0, restCount = 0;
+    for (const i of ids) {
+      if (items.length < 4 || SIZE[i] / total * area >= MIN_TILE_AREA) {
+        items.push({i, v: SIZE[i]});
+      } else {
+        restSize += SIZE[i];
+        restCount++;
+      }
+    }
+    if (restCount) items.push({i: -1, v: restSize, rest: restCount});
+    return squarify(items, 0, 0, w, ht);
+  }
+  // A long name keeps its ends, which is where the telling part usually is.
+  function shortName(name, max) {
+    if (max < 6 || name.length <= max) return name;
+    const head = Math.ceil((max - 1) * 0.62);
+    return name.slice(0, head) + "…" + name.slice(name.length - (max - 1 - head));
+  }
+  // In "content" mode only the kinds that fill this folder get a hue; the
+  // tail shares the grey "Other" slot, so the legend stays readable.
+  let paintSlots = null;
+  function paintSetup() {
+    paintSlots = null;
+    if (paint !== "type") return;
+    paintSlots = new Set(comp(cur).slice().sort((a, b) => b[1] - a[1])
+      .slice(0, 5).map((p) => p[0]));
+  }
+  function tileSkin(i, nested, level) {
+    if (paint === "level") {
+      const lv = tintLevel(i);
+      return [lv ? " lv-" + lv : "", ""];
+    }
+    if (paint === "age") {
+      const band = mainAge(i);
+      if (band < 0) return ["", ""];
+      // The band drives how deep the tint goes as well as the hue: five steps
+      // of the same blue at one strength would all read as "pale".
+      const mix = ((nested ? 30 : 20) + band * 11) + "%";
+      return ["", ";background:color-mix(in srgb," + ageColor(band) + " " + mix +
+              ",var(--surface));box-shadow:inset 0 3px 0 " + ageColor(band)];
+    }
+    let slot = mainCat(i);
+    if (slot < 0) return ["", ""];
+    if (paintSlots && !paintSlots.has(slot)) slot = CAT.length - 1;
+    const mix = nested ? (level % 2 === 0 ? "var(--tint-frame2)" : "var(--tint-frame)")
+                       : "var(--tint)";
+    return ["", ";background:color-mix(in srgb," + catColor(slot) + " " + mix +
+            ",var(--surface));box-shadow:inset 0 3px 0 " + catColor(slot)];
+  }
   function drawTile(parent, r, level) {
     // 1px inwards on each side: leaves a 2px gap between blocks.
     const x0 = Math.round(r.x) + 1, y0 = Math.round(r.y) + 1;
     const w = Math.round(r.x + r.w) - 1 - x0, ht = Math.round(r.y + r.h) - 1 - y0;
     if (w < 2 || ht < 2) return;
-    const i = r.i, kind = KIND[i], lv = tintLevel(i);
-    // The icon only on what has a rule of its own; what is inside gets the tint.
-    const own = CLS[i] !== undefined ? RULES[CLS[i]].level : null;
-    const mark = own && STATUS[own] ? own : null;
     const el = document.createElement("div");
-    el.className = "tile" + (kind === FILE ? " f" : kind > FILE ? " o" : "") + (lv ? " lv-" + lv : "") +
-      (i === sel ? " sel" : "");
-    el.dataset.i = i;
     el.style.cssText = "left:" + x0 + "px;top:" + y0 + "px;width:" + w + "px;height:" + ht + "px";
+    const i = r.it.i;
+    if (i < 0) {
+      const full = plural(r.it.rest, "smaller item", "smaller items");
+      el.className = "tile o";
+      el.title = full + " · " + human(r.it.v);
+      if (w > 44 && ht > 20) {
+        el.append(h("div", {class: "tl"}, h("span", null,
+          w > 120 ? full : "+" + count(r.it.rest))));
+      }
+      parent.append(el);
+      return;
+    }
+    const kind = KIND[i];
     const kids = level < NEST_LEVELS && kind === DIR && w > 110 && ht > 84
       ? kidsOf(i).filter((k) => SIZE[k] > 0) : [];
+    // The icon only on what has a rule of its own, and only while the colours
+    // mean "can this be cleaned".
+    const own = CLS[i] !== undefined ? RULES[CLS[i]].level : null;
+    const mark = paint === "level" && own && STATUS[own] ? own : null;
+    const [cls, style] = tileSkin(i, kids.length > 0, level);
+    // Even and odd frame levels get different tints: otherwise one frame
+    // inside another cannot be told apart.
+    el.className = "tile" + (kind === FILE ? " f" : kind > FILE ? " o" : "") + cls +
+      (kids.length ? " nest" + (level % 2 === 0 ? " d2" : "") : "") +
+      (i === sel ? " sel" : "");
+    el.dataset.i = i;
+    if (style) el.style.cssText += style;
     if (kids.length) {
-      // Even and odd frame levels get different tints: otherwise one frame
-      // inside another cannot be told apart.
-      el.classList.add("nest");
-      if (level % 2 === 0) el.classList.add("d2");
       const head = h("div", {class: "nest-h"});
       if (mark) head.append(lvdot(mark));
       head.append(h("span", {class: "nt"}, label(i)), h("span", {class: "ts"}, human(SIZE[i])));
       const inner = h("div", {class: "nest-in", style: "left:2px;top:25px;width:" + (w - 4) + "px;height:" + (ht - 27) + "px"});
-      for (const rr of squarify(kids.slice(0, 60), 0, 0, w - 4, ht - 27)) drawTile(inner, rr, level + 1);
+      for (const rr of layout(kids.slice(0, 60), w - 4, ht - 27)) drawTile(inner, rr, level + 1);
       el.append(head, inner);
     } else if (w > 44 && ht > 20) {
       const tl = h("div", {class: "tl"});
       if (mark && w > 70) tl.append(lvdot(mark));
-      tl.append(h("span", null, label(i)));
+      // ~7.2 px per character at this size: cutting it short here beats
+      // letting the CSS ellipsis chop the middle-shortened name again.
+      const room = Math.floor((w - (mark && w > 70 ? 32 : 16)) / 7.2);
+      // "84 more files" shrinks to "+84" rather than to "84 m…s".
+      const text = kind > FILE && room < label(i).length
+        ? "+" + (NAME[i].split(" ")[0] || "")
+        : shortName(label(i), room);
+      tl.append(h("span", null, text));
       el.append(tl);
       if (ht > 38) el.append(h("div", {class: "ts"}, human(SIZE[i])));
     }
@@ -1033,6 +1184,8 @@
     $("mapTitle").textContent = label(cur) + " · " + human(SIZE[cur]);
     map.setAttribute("aria-label", "Map of " + label(cur) +
       ": each block is proportional to what it takes up. The content table below has the same data.");
+    paintSetup();
+    renderLegend();
     const W = map.clientWidth, H = map.clientHeight;
     if (!W || !H) return;
     const items = kidsOf(cur).filter((i) => SIZE[i] > 0).slice(0, 160);
@@ -1040,13 +1193,46 @@
       map.append(h("div", {class: "empty"}, emptyText(cur)));
       return;
     }
-    for (const r of squarify(items, 0, 0, W, H)) drawTile(map, r, 1);
+    for (const r of layout(items, W, H)) drawTile(map, r, 1);
   }
   function renderLegend() {
     const box = $("mapLegend");
-    for (const level of ACTIONABLE) box.append(h("span", {class: "lg-i"}, lvdot(level), LV[level].label));
-    box.append(h("span", {class: "lg-i"}, swatch("var(--tile)"), "Not flagged"));
-    box.append(h("span", null, "· The color says whether it can be cleaned; the size of the block, how much it takes up."));
+    box.textContent = "";
+    if (paint === "level") {
+      for (const level of ACTIONABLE) box.append(h("span", {class: "lg-i"}, lvdot(level), LV[level].label));
+      box.append(h("span", {class: "lg-i"}, swatch("var(--tile)"), "Not flagged"));
+      box.append(h("span", null, "· The colour says whether it can be cleaned; the size of the block, how much it takes up."));
+      return;
+    }
+    if (paint === "type") {
+      const other = CAT.length - 1;
+      const parts = comp(cur).slice().sort((a, b) => b[1] - a[1]);
+      const shown = parts.slice(0, 5);
+      for (const [c] of shown) box.append(h("span", {class: "lg-i"}, swatch(catColor(c)), CAT[c]));
+      // The folded tail shares the grey slot, so it only earns its own entry
+      // when "Other" is not already on the list.
+      if (parts.length > shown.length && !shown.some(([c]) => c === other)) {
+        box.append(h("span", {class: "lg-i"}, swatch(catColor(other)), "Other kinds"));
+      }
+      box.append(h("span", null, "· The colour is the kind of file that fills most of each block."));
+      return;
+    }
+    for (let b = 0; b < AGE.length; b++) {
+      box.append(h("span", {class: "lg-i"}, swatch(ageColor(b)), AGE[b]));
+    }
+    box.append(h("span", null, "· Darker means older: the colour is when most of what is inside was last written."));
+  }
+
+  // ---- the map and the table are one instrument --------------------------
+  let hl = -1;
+  function highlight(i) {
+    if (hl === i) return;
+    hl = i;
+    for (const el of document.querySelectorAll(".tile.hl, #list tr.hl")) el.classList.remove("hl");
+    if (i < 0) return;
+    for (const el of document.querySelectorAll('.tile[data-i="' + i + '"], #list tr[data-i="' + i + '"]')) {
+      el.classList.add("hl");
+    }
   }
 
   let mapHover = -1;
@@ -1054,17 +1240,18 @@
     const map = $("map");
     map.addEventListener("pointermove", (e) => {
       const t = e.target.closest(".tile");
-      if (!t) { mapHover = -1; tipHide(); return; }
+      if (!t || !t.dataset.i) { mapHover = -1; highlight(-1); tipHide(); return; }
       const i = +t.dataset.i;
-      if (i !== mapHover) { mapHover = i; tipShow(e, (el) => nodeTip(el, i, cur)); }
+      if (i !== mapHover) { mapHover = i; highlight(i); tipShow(e, (el) => nodeTip(el, i, cur)); }
       else tipMove(e);
     });
-    map.addEventListener("pointerleave", () => { mapHover = -1; tipHide(); });
+    map.addEventListener("pointerleave", () => { mapHover = -1; highlight(-1); tipHide(); });
     map.addEventListener("click", (e) => {
       const t = e.target.closest(".tile");
-      if (!t) return;
+      if (!t || !t.dataset.i) return;
       const i = +t.dataset.i;
       mapHover = -1;
+      highlight(-1);
       tipHide();
       if (KIND[i] === DIR) go("explore/" + i);
       else go("explore/" + PARENT[i] + "/" + i);
@@ -1100,15 +1287,38 @@
     if (i > 0) stat(stats, "Of " + label(PARENT[i]), pct(SIZE[i], SIZE[PARENT[i]]));
     if (i > 0) stat(stats, "Of everything scanned", pct(SIZE[i], SIZE[0]));
     else if (M.disk && M.disk.used) stat(stats, "Of the space in use", pct(SIZE[0], M.disk.used));
-    if (KIND[i] === FILE) stat(stats, "Type", CAT[CATS[i]]);
-    else stat(stats, "Files", count(FILES[i]));
+    if (KIND[i] === FILE) {
+      stat(stats, "Type", CAT[CATS[i]]);
+      const band = AGES[i];
+      if (band != null && band >= 0) stat(stats, "Last written", AGE[band]);
+    } else {
+      stat(stats, "Files", count(FILES[i]));
+      if (coldShare(i) >= 0) stat(stats, "Untouched 1 year+", pct(coldBytes(i), SIZE[i]));
+    }
     body.append(stats);
 
+    const line = cleanableLine(i);
+    if (line) body.append(line);
     body.append(whatBlock(i));
     if (KIND[i] === DIR) {
       const c = compBlock(i);
       if (c) body.append(c);
+      const a = ageBlock(i);
+      if (a) body.append(a);
     }
+  }
+  // How much of what sits under here is worth cleaning, without leaving the panel.
+  function cleanableLine(i) {
+    const sums = cleanupUnder(i);
+    const bits = [];
+    if (sums.safe) bits.push(human(sums.safe) + " safe to delete");
+    if (sums.review) bits.push(human(sums.review) + " worth a look");
+    if (sums.tool) bits.push(human(sums.tool) + " needs a tool");
+    if (!bits.length) return null;
+    return h("div", {class: "h-note"}, icon("safe", "lvdot hp-good"),
+      h("span", null, "In here: " + bits.join(" · ") + ". ",
+        h("button", {class: "link", type: "button", onclick: () => go("cleanup")},
+          "See in Cleanup")));
   }
   function whatBlock(i) {
     const box = h("div", {class: "what"}, h("div", {class: "sec-t"}, "What is this?"));
@@ -1134,7 +1344,8 @@
       box.append(h("div", {class: "inherit"}, "It sits inside ",
         h("button", {class: "link", type: "button", onclick: () => openNode(ctx.at)}, label(ctx.at)), ":"));
     }
-    box.append(levelChip(r.level), h("h3", null, r.label), h("p", null, r.desc));
+    if (r.level !== "info") box.append(levelChip(r.level));
+    box.append(h("h3", null, r.label), h("p", null, r.desc));
     if (r.how) box.append(h("div", {class: "how"}, h("b", null, "What to do"), h("div", null, richText(r.how))));
     if (CLEANABLE.has(i)) box.append(cleanControls([i]));
     return box;
@@ -1427,6 +1638,17 @@
     box.append(lg);
     return box;
   }
+  function ageBlock(i) {
+    const parts = ageComp(i).sort((a, b) => a[0] - b[0]);
+    if (!parts.length) return null;
+    const total = parts.reduce((s, p) => s + p[1], 0);
+    const box = h("div", null, h("div", {class: "sec-t"}, "When it was last written"));
+    box.append(stackBar(parts.map(([b, v]) => ({label: AGE[b], value: v, color: ageColor(b)})), total));
+    const lg = h("div", {class: "legend"});
+    for (const [b, v] of parts) lg.append(legendRow(swatch(ageColor(b)), AGE[b], human(v), pct(v, total)));
+    box.append(lg);
+    return box;
+  }
 
   function renderList() {
     const table = $("list");
@@ -1445,6 +1667,7 @@
       name: (a, b) => NAME[a].localeCompare(NAME[b], "en", {numeric: true, sensitivity: "base"}),
       size: (a, b) => SIZE[a] - SIZE[b],
       files: (a, b) => FILES[a] - FILES[b],
+      cold: (a, b) => coldShare(a) - coldShare(b),
     }[sortKey];
     // By name, the "N more files/folders" groups go last.
     const grouped = (i) => (sortKey === "name" && KIND[i] > FILE ? 1 : 0);
@@ -1463,13 +1686,14 @@
     table.append(h("thead", null, h("tr", null,
       th("name", "Name"), h("th", {class: "opt", scope: "col"}, "What it is"),
       h("th", {class: "opt", scope: "col"}, "Main type"), th("size", "Size", "num"),
-      h("th", {scope: "col"}, "% of folder"), th("files", "Files", "num opt"))));
+      h("th", {scope: "col"}, "% of folder"),
+      th("cold", "Untouched 1 year+", "opt"), th("files", "Files", "num opt"))));
 
     const body = h("tbody");
     const limit = showAll ? kids.length : 200;
     for (const i of kids.slice(0, limit)) body.append(listRow(i));
     if (kids.length > limit) {
-      body.append(h("tr", {class: "more-row"}, h("td", {colspan: "6"},
+      body.append(h("tr", {class: "more-row"}, h("td", {colspan: "7"},
         h("button", {class: "btn", type: "button", onclick: () => { showAll = true; renderList(); }},
           "Show all " + count(kids.length) + " items"))));
     }
@@ -1477,23 +1701,32 @@
   }
   function listRow(i) {
     const kind = KIND[i];
-    const tr = h("tr", {class: "go" + (i === sel ? " sel" : ""), tabindex: "0"});
+    const tr = h("tr", {class: "go" + (i === sel ? " sel" : ""), tabindex: "0", "data-i": i});
     const act = () => openNode(i);
     tr.addEventListener("click", act);
     tr.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === " ") { e.preventDefault(); act(); }
     });
+    tr.addEventListener("mouseenter", () => highlight(i));
+    tr.addEventListener("mouseleave", () => highlight(-1));
+    tr.addEventListener("focus", () => highlight(i));
+    tr.addEventListener("blur", () => highlight(-1));
     const nm = h("div", {class: "nm"}, icon(kind === DIR ? "folder" : kind === FILE ? "file" : "more"),
       h("span", {class: "t" + (kind > FILE ? " o" : "")}, NAME[i],
         DENIED.has(i) ? h("span", {class: "tag"}, "no access") : null));
     const own = CLS[i] !== undefined ? RULES[CLS[i]] : null;
     const mc = kind === DIR ? mainCat(i) : kind === FILE ? CATS[i] : -1;
+    const cold = coldShare(i);
     tr.append(
       h("td", null, nm),
       h("td", {class: "opt"}, own && own.level !== "info" ? ruleChip(own) : null),
       h("td", {class: "opt"}, mc >= 0 ? h("span", {class: "catcell"}, h("span", {class: "dot", style: "background:" + catColor(mc)}), CAT[mc]) : null),
       h("td", {class: "num"}, human(SIZE[i])),
       h("td", null, pbar(SIZE[i], SIZE[cur])),
+      h("td", {class: "opt"}, cold < 0 ? "—" : h("div", {class: "pb"},
+        h("div", {class: "bar"}, h("i", {style: "width:" + (cold * 100).toFixed(1) +
+          "%;background:" + ageColor(AGE.length - 1)})),
+        h("span", {class: "num"}, pct(coldBytes(i), SIZE[i])))),
       h("td", {class: "num opt"}, kind === FILE ? "—" : count(FILES[i])));
     return tr;
   }
@@ -1972,6 +2205,9 @@
     for (const b of document.querySelectorAll("#viewSeg button")) {
       b.addEventListener("click", () => setView(b.dataset.view));
     }
+    for (const b of document.querySelectorAll("#paintSeg button")) {
+      b.addEventListener("click", () => setPaint(b.dataset.paint));
+    }
     document.addEventListener("keydown", (e) => {
       const typing = /^(input|textarea|select)$/i.test(e.target.tagName || "");
       if ($("confirm").open) return;
@@ -1993,7 +2229,6 @@
   applyTheme();
   renderHeader();
   renderKpis();
-  renderLegend();
   renderFoot();
   setupMapEvents();
   setupSearch();

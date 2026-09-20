@@ -16,6 +16,7 @@ import os
 
 import classify
 import cleaner
+import scanner
 from classify import Classification
 from scanner import DirNode, ScanResult, display_path
 from version import VERSION
@@ -78,7 +79,8 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
     def force(node: DirNode, name: str | None = None, size: int = 0) -> None:
         _include(node, dirs)
         if name is not None:
-            files.setdefault(node, {})[name] = size
+            # -1: this one was pulled in by a link, so its age is not at hand.
+            files.setdefault(node, {}).setdefault(name, (size, -1))
 
     for _rule, _size, items in clean_groups:
         for finding in items[:MAX_LISTED]:
@@ -167,6 +169,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
         "disk": ({"total": usage.total, "used": usage.used, "free": usage.free}
                  if usage else None),
         "cats": [label for _key, label in classify.CATEGORIES],
+        "ages": list(scanner.AGE_BANDS),
         "levels": {key: {"label": label, "hint": hint}
                    for key, (label, hint) in classify.LEVELS.items()},
         "items": len(tree["n"]),
@@ -176,7 +179,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
     payload = {
         "meta": meta,
         "health": health or {},
-        "nodes": {key: tree[key] for key in ("n", "s", "f", "p", "k", "c")},
+        "nodes": {key: tree[key] for key in ("n", "s", "f", "p", "k", "c", "a")},
         "denied": tree["denied"],
         "rules": rules,
         "cls": cls,
@@ -228,21 +231,21 @@ def _select(root: DirNode, budget: int, min_size: int):
     def expand(node: DirNode) -> None:
         for child in node.children:
             if child.total >= min_size:
-                heapq.heappush(heap, (-child.total, next(tie), child, None))
-        for size, name in node.big_files:
+                heapq.heappush(heap, (-child.total, next(tie), child, None, -1))
+        for size, name, band in node.big_files:
             if size >= min_size:
-                heapq.heappush(heap, (-size, next(tie), node, name))
+                heapq.heappush(heap, (-size, next(tie), node, name, band))
 
     expand(root)
     cutoff = min_size
     while heap and budget > 0:
-        neg, _, node, name = heapq.heappop(heap)
+        neg, _, node, name, band = heapq.heappop(heap)
         budget -= 1
         if name is None:
             dirs.add(node)
             expand(node)
         else:
-            files.setdefault(node, {})[name] = -neg
+            files.setdefault(node, {})[name] = (-neg, band)
         if not budget and heap:
             cutoff = -heap[0][0]
     return dirs, files, cutoff
@@ -277,24 +280,26 @@ def _emit(root: DirNode, dirs: set, files: dict) -> dict:
     parents: list = []
     kinds: list = []
     cats: list = []
+    ages: list = []
     index: dict[DirNode, int] = {}
     file_index: dict[tuple[DirNode, str], int] = {}
     denied: list[int] = []
 
-    def emit(name, size, count, parent, kind, cat) -> int:
+    def emit(name, size, count, parent, kind, cat, age) -> int:
         names.append(name)
         sizes.append(size)
         counts.append(count)
         parents.append(parent)
         kinds.append(kind)
         cats.append(cat)
+        ages.append(age)
         return len(names) - 1
 
     stack: list[tuple[DirNode, int]] = [(root, -1)]
     while stack:
         node, parent = stack.pop()
         pos = index[node] = emit(node.name, node.total, node.total_files, parent,
-                                 KIND_DIR, _cat_pairs(node))
+                                 KIND_DIR, _pairs(node.cats), _pairs(node.ages))
         if node.denied:
             denied.append(pos)
 
@@ -303,7 +308,7 @@ def _emit(root: DirNode, dirs: set, files: dict) -> dict:
             if child in dirs:
                 stack.append((child, pos))
             elif child.denied and not child.total and len(denied) < MAX_DENIED:
-                cpos = index[child] = emit(child.name, 0, 0, pos, KIND_DIR, [])
+                cpos = index[child] = emit(child.name, 0, 0, pos, KIND_DIR, [], [])
                 denied.append(cpos)
             else:
                 hidden += 1
@@ -312,32 +317,33 @@ def _emit(root: DirNode, dirs: set, files: dict) -> dict:
 
         listed = files.get(node, {})
         listed_size = 0
-        for name, size in sorted(listed.items(), key=lambda kv: kv[1], reverse=True):
+        for name, (size, band) in sorted(listed.items(), key=lambda kv: kv[1][0],
+                                         reverse=True):
             ext = os.path.splitext(name)[1].lower()
             file_index[(node, name)] = emit(name, size, 1, pos, KIND_FILE,
-                                            classify.category_of(ext))
+                                            classify.category_of(ext), band)
             listed_size += size
 
         rest = node.own_size - listed_size
         rest_files = node.own_files - len(listed)
         if rest > 0 and rest_files > 0:
             emit(_more(rest_files, "file", "files"), rest, rest_files, pos,
-                 KIND_MORE_FILES, None)
+                 KIND_MORE_FILES, None, None)
         if hidden and hidden_size > 0:
             emit(_more(hidden, "folder", "folders"), hidden_size, hidden_files, pos,
-                 KIND_MORE_DIRS, None)
+                 KIND_MORE_DIRS, None, None)
 
     return {"n": names, "s": sizes, "f": counts, "p": parents, "k": kinds, "c": cats,
-            "index": index, "file_index": file_index, "denied": denied}
+            "a": ages, "index": index, "file_index": file_index, "denied": denied}
 
 
-def _cat_pairs(node: DirNode) -> list[int]:
-    """Make-up by type as [category, bytes, category, bytes, ...]."""
+def _pairs(counters) -> list[int]:
+    """A counter array as [slot, bytes, slot, bytes, ...], zeros dropped."""
     out: list[int] = []
-    if node.cats is not None:
-        for cat, size in enumerate(node.cats):
+    if counters is not None:
+        for slot, size in enumerate(counters):
             if size:
-                out += (cat, size)
+                out += (slot, size)
     return out
 
 

@@ -984,7 +984,7 @@ def classify(root) -> Classification:
             if rule.stop:
                 continue
         comps = None
-        for size, name in node.big_files:
+        for size, name, _band in node.big_files:
             lower = name.lower()
             rules = _file_candidates(lower)
             if not rules:
