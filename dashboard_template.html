@@ -11,6 +11,7 @@
     --page:#f9f9f7; --surface:#fcfcfb; --ink:#0b0b0b; --ink-2:#52514e; --muted:#898781;
     --grid:#e1e0d9; --baseline:#c3c2b7; --border:rgba(11,11,11,.10); --hover:rgba(11,11,11,.045);
     --accent:#2a78d6; --accent-track:#cde2fb;
+    --free:#e1e0d9;
     --good:#0ca30c; --warning:#fab219; --serious:#ec835a; --critical:#d03b3b; --neutral:#898781;
     --glyph:#0b0b0b;
     --c0:#2a78d6; --c1:#eb6834; --c2:#1baf7a; --c3:#eda100; --c4:#e87ba4;
@@ -28,6 +29,7 @@
       --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
       --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10); --hover:rgba(255,255,255,.06);
       --accent:#3987e5; --accent-track:#104281;
+      --free:#5f5e57;
       --c0:#3987e5; --c1:#d95926; --c2:#199e70; --c3:#c98500; --c4:#d55181;
       --c5:#008300; --c6:#9085e9; --c7:#e66767; --c8:#898781;
       --tile:#2c2c2a; --tile-file:#252524; --tile-rest:#212120; --tile-frame:#43433f; --tile-frame2:#373734;
@@ -42,6 +44,7 @@
     --page:#0d0d0d; --surface:#1a1a19; --ink:#ffffff; --ink-2:#c3c2b7; --muted:#898781;
     --grid:#2c2c2a; --baseline:#383835; --border:rgba(255,255,255,.10); --hover:rgba(255,255,255,.06);
     --accent:#3987e5; --accent-track:#104281;
+    --free:#5f5e57;
     --c0:#3987e5; --c1:#d95926; --c2:#199e70; --c3:#c98500; --c4:#d55181;
     --c5:#008300; --c6:#9085e9; --c7:#e66767; --c8:#898781;
     --tile:#2c2c2a; --tile-file:#252524; --tile-rest:#212120; --tile-frame:#43433f; --tile-frame2:#373734;
@@ -97,6 +100,9 @@
 
   /* ---- key figures ---- */
   .kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0}
+  .scopebar{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin:18px 0 -4px}
+  .scopebar .lbl{color:var(--ink-2);font-size:13px}
+  .scopebar .note{color:var(--ink-2);font-size:12px}
   .kpi{background:var(--surface);border:1px solid var(--border);border-radius:12px;
     padding:14px 16px;box-shadow:var(--shadow);min-width:0}
   .kpi.clickable{cursor:pointer}
@@ -464,6 +470,7 @@
 
 <main class="wrap">
   <div class="error" id="error" role="alert"></div>
+  <div class="scopebar" id="scopeBar" hidden></div>
   <section class="kpis" id="kpis" aria-label="Summary"></section>
 
   <nav class="tabs" id="tabs" role="tablist">
@@ -578,8 +585,6 @@
   }
   const CLEANED = new Map();     // id -> result sent back by the server
   const GONE = new Set();        // ids that no longer exist after a delete
-  const freedByLevel = {safe: 0, review: 0, tool: 0};
-  let freedTotal = 0;
 
   const KIDS = new Array(COUNT);
   for (let i = 1; i < COUNT; i++) {
@@ -592,6 +597,19 @@
     if (!k) return [];
     return GONE.size ? k.filter((x) => !GONE.has(x)) : k;
   }
+
+  // The page always carries the scan as it was taken. Whatever PinkWard has
+  // deleted since comes with the page, so reloading it does not bring back
+  // what is no longer on disk. In the order it happened: a folder cleaned
+  // after something inside it would not add up the same the other way round.
+  if (API && API.cleaned && API.cleaned.length) {
+    for (const [i, r] of API.cleaned) {
+      if (i < 0 || i >= COUNT || !r) continue;
+      CLEANED.set(i, r);
+      if (r.ok) applyClean(i, r);
+    }
+  }
+  if (API && API.disk) applyDisk(API.disk);
 
   // ---- formatting --------------------------------------------------------
   const nf = (d) => new Intl.NumberFormat("en-US", {minimumFractionDigits: d, maximumFractionDigits: d});
@@ -650,6 +668,10 @@
     const cut = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
     return (cut >= 0 ? trimmed.slice(cut + 1) : trimmed) + (drive ? " (" + drive + ")" : "");
   }
+  const driveOf = (id) => {
+    const entry = ROOTS.find((r) => r.id === id);
+    return entry && /^[A-Za-z]:/.test(entry.path) ? entry.path.slice(0, 2) : "";
+  };
   function ruleCtx(i) {
     for (let n = i; n >= 0; n = PARENT[n]) {
       const r = CLS[n];
@@ -850,6 +872,9 @@
 
   // ---- navigation --------------------------------------------------------
   const TABS = ["explore", "cleanup", "files", "types", "health"];
+  // Which drive every figure is about: a scanned root, or 0 for all of them.
+  // It follows wherever Explore is, and the switch above the figures sets it.
+  let scope = 0;
   let cur = 0, sel = null, tab = "explore";
   let sortKey = "size", sortDir = -1, showAll = false, simpleAll = false;
   let view = "simple";
@@ -874,6 +899,21 @@
       if (tabs.getBoundingClientRect().top < 0) tabs.scrollIntoView({block: "start"});
     }
   }
+  // The drive a node belongs to, as the figures understand it: 0 is all of
+  // them, which is also what a scan of a single drive always is.
+  const scopeFor = (i) => Math.max(0, rootOf(i));
+  function setScope(next) {
+    if (next === scope) return;
+    scope = next;
+    renderScope();
+    renderKpis();
+    renderFoot();
+    for (const t of ["cleanup", "files"]) {
+      rendered[t] = false;
+      $("tab-" + t).textContent = "";
+    }
+    if (tab !== "explore") setTab(tab);
+  }
   function route() {
     const parts = location.hash.slice(1).split("/");
     const t = TABS.includes(parts[0]) ? parts[0] : "explore";
@@ -882,6 +922,8 @@
       const next = d >= 0 && d < COUNT && KIND[d] === DIR && !GONE.has(d) ? d : 0;
       if (next !== cur) { showAll = false; simpleAll = false; }
       cur = next;
+      // Walking into a drive is what tells the figures to be about it.
+      setScope(scopeFor(cur));
       const s = parseInt(parts[2], 10);
       sel = s > 0 && s < COUNT && PARENT[s] === cur && !GONE.has(s) ? s : null;
     } else if (t === "types") {
@@ -936,20 +978,91 @@
     if (o.sub) el.append(h("div", {class: "kpi-sub"}, o.sub));
     return el;
   }
-  // Totals for a level, with whatever has already been deleted taken off.
-  const levelBytes = (level) => Math.max(0, ((RAW.clean.totals[level] || {}).s || 0) - (freedByLevel[level] || 0));
-  function levelPlaces(level) {
-    let n = (RAW.clean.totals[level] || {}).n || 0;
-    for (const [i, r] of CLEANED) {
-      const info = CLEANABLE.get(i);
-      if (r.ok && !r.skipped && info && info.rule.level === level) n--;
+  // How much of a group is on one drive. Without a drive in view, or on a
+  // scan of a single one, that is simply the whole of it.
+  function groupSpan(g) {
+    if (!scope || !g.roots) return [g.s, g.n];
+    return g.roots[scope] || [0, 0];
+  }
+  function inScope(i) {
+    return !scope || rootOf(i) === scope;
+  }
+  // Totals, with whatever has already been deleted taken off. Everything the
+  // figures show goes through here, so the summary and the Cleanup tab can
+  // never disagree.
+  function groupBytes(g) {
+    let freed = 0;
+    for (const [i] of g.items) {
+      if (!inScope(i)) continue;
+      const r = CLEANED.get(i);
+      if (r && r.ok) freed += r.freed || 0;
     }
-    return Math.max(0, n);
+    return Math.max(0, groupSpan(g)[0] - freed);
+  }
+  function groupPlaces(g) {
+    let done = 0;
+    for (const [i] of g.items) {
+      if (!inScope(i)) continue;
+      const r = CLEANED.get(i);
+      if ((r && r.ok && !r.skipped) || (!r && GONE.has(i))) done++;
+    }
+    return Math.max(0, groupSpan(g)[1] - done);
+  }
+  const ofLevel = (level) => RAW.clean.groups.filter((g) => RULES[g.r].level === level);
+  const levelBytes = (level) => ofLevel(level).reduce((t, g) => t + groupBytes(g), 0);
+  const levelPlaces = (level) => ofLevel(level).reduce((t, g) => t + groupPlaces(g), 0);
+  // What has been freed since the scan: in the drive in view, or in all.
+  function freedHere() {
+    let freed = 0;
+    for (const [i, r] of CLEANED) if (r.ok && inScope(i)) freed += r.freed || 0;
+    return freed;
+  }
+  function freedAll() {
+    let freed = 0;
+    for (const [, r] of CLEANED) if (r.ok) freed += r.freed || 0;
+    return freed;
   }
   function topLabels(level) {
-    const names = RAW.clean.groups.filter((g) => RULES[g.r].level === level && groupBytes(g) > 0)
+    const names = ofLevel(level).filter((g) => groupBytes(g) > 0)
       .slice(0, 2).map((g) => RULES[g.r].label);
     return names.length ? " · mostly " + names.join(", ") : "";
+  }
+  // Free space as PinkWard last saw it, put back where it belongs: the total
+  // for the summary, and each drive for the bar in the simple view.
+  function applyDisk(disk) {
+    if (!disk || !disk.total) return;
+    M.disk = disk;
+    if (!disk.drives) return;
+    for (const r of ROOTS) {
+      const key = (/^[A-Za-z]:/.test(r.path) ? r.path.slice(0, 2) : r.path).toUpperCase();
+      if (disk.drives[key]) r.disk = disk.drives[key];
+    }
+  }
+  // The drive a node sits on, and what to call it.
+  function diskFor(i) {
+    const entry = ROOTS.find((x) => x.id === rootOf(i));
+    if (entry && entry.disk && entry.disk.total) {
+      const letter = driveOf(entry.id);
+      return {disk: entry.disk, name: letter ? "drive " + letter : rootLabel(entry)};
+    }
+    if (M.disk && M.disk.total) {
+      return {disk: M.disk, name: MULTI ? "the scanned drives"
+        : (/^[A-Za-z]:/.test(M.root) ? "drive " + M.root.slice(0, 2) : "the drive")};
+    }
+    return null;
+  }
+  // The drive figures for what is in view: one drive, or all of them.
+  function scopeDisk() {
+    if (scope) {
+      const entry = ROOTS.find((r) => r.id === scope);
+      return entry && entry.disk && entry.disk.total ? entry.disk : null;
+    }
+    return M.disk && M.disk.total ? M.disk : null;
+  }
+  const scopeEntry = () => ROOTS.find((r) => r.id === scope) || null;
+  function scopeName() {
+    const entry = scopeEntry();
+    return entry ? rootLabel(entry) : (MULTI ? "everything scanned" : M.root);
   }
   // Each scanned drive once, with how full it is.
   function drivesUsage() {
@@ -962,13 +1075,37 @@
     }
     return out;
   }
+  // Which drive the figures are about. Only worth showing when more than one
+  // was scanned; with a single one everything is already about it.
+  function renderScope() {
+    const box = $("scopeBar");
+    box.hidden = !MULTI;
+    if (!MULTI) return;
+    box.textContent = "";
+    const seg = h("div", {class: "seg drives", role: "group", "aria-label": "Scanned drives"});
+    const pick = (id) => () => {
+      setScope(id);
+      if (tab === "explore") go("explore/" + id);
+    };
+    seg.append(h("button", {type: "button", "aria-pressed": String(scope === 0),
+      title: "Everything that was scanned", onclick: pick(0)}, "All"));
+    for (const r of ROOTS) {
+      seg.append(h("button", {type: "button", "aria-pressed": String(scope === r.id),
+        title: r.path, onclick: pick(r.id)}, rootLabel(r)));
+    }
+    box.append(h("span", {class: "lbl"}, "Showing"), seg,
+      h("span", {class: "note"}, scope
+        ? "the figures and the cleanup below are about " + scopeName()
+        : "the figures and the cleanup below cover all " +
+          plural(ROOTS.length, "scanned drive", "scanned drives")));
+  }
   function renderKpis() {
     const box = $("kpis");
     box.textContent = "";
     const toClean = () => go("cleanup");
     box.append(kpi({hero: true, level: "safe", label: "Safe to delete",
       value: human(levelBytes("safe")),
-      sub: freedTotal ? "You already freed " + human(freedTotal) + " from here"
+      sub: freedHere() ? "You already freed " + human(freedHere()) + " from here"
         : levelPlaces("safe") ? "in " + plural(levelPlaces("safe"), "place", "places") + ": caches, temp files and dumps"
         : "Nothing found",
       onclick: toClean}));
@@ -978,11 +1115,13 @@
     box.append(kpi({level: "tool", label: "Needs a Windows tool", value: human(levelBytes("tool")),
       sub: levelPlaces("tool") ? "in " + plural(levelPlaces("tool"), "place", "places") + topLabels("tool") : "Nothing found",
       onclick: toClean}));
-    if (M.disk && M.disk.total) {
-      const d = M.disk, used = d.used / d.total;
-      const each = drivesUsage();
-      const name = each.length > 1 ? "Drives" : "Drive" +
-        (/^[A-Za-z]:/.test(M.root) ? " " + M.root.slice(0, 2) : "");
+    const d = scopeDisk();
+    if (d) {
+      const used = d.used / d.total;
+      const each = scope ? [] : drivesUsage();
+      const name = each.length > 1 ? "Drives"
+        : "Drive" + (scope ? " " + driveOf(scope)
+            : (/^[A-Za-z]:/.test(M.root) ? " " + M.root.slice(0, 2) : ""));
       const meter = h("div", {class: "meter" + (used >= 0.9 ? " crit" : used >= 0.8 ? " warn" : ""),
         role: "meter", "aria-label": "Space used on the drive", "aria-valuemin": "0", "aria-valuemax": "100",
         "aria-valuenow": String(Math.round(used * 100))}, h("i", {style: "width:" + (used * 100).toFixed(1) + "%"}));
@@ -992,9 +1131,9 @@
             " · " + human(d.free) + " free"
           : human(d.free) + " free of " + human(d.total) + (used >= 0.9 ? " · nearly full" : "")}));
     }
-    box.append(kpi({label: "Scanned", value: human(SIZE[0]),
-      sub: plural(FILES[0], "file", "files") +
-        (M.disk && M.disk.used ? " · " + pct(SIZE[0], M.disk.used) + " of the space in use" : "")}));
+    box.append(kpi({label: "Scanned", value: human(SIZE[scope]),
+      sub: plural(FILES[scope], "file", "files") +
+        (d && d.used ? " · " + pct(SIZE[scope], d.used) + " of the space in use" : "")}));
   }
 
   // ---- explorer ----------------------------------------------------------
@@ -1053,19 +1192,7 @@
       onclick: () => { if (cur > 0) go("explore/" + PARENT[cur]); }}, icon("up"), "Up");
     up.disabled = cur === 0;
     box.append(up);
-    if (MULTI) box.append(driveSwitch());
     appendTrail(box, cur);
-  }
-  function driveSwitch() {
-    const here = rootOf(cur);
-    const seg = h("div", {class: "seg drives", role: "group", "aria-label": "Scanned drives"});
-    seg.append(h("button", {type: "button", "aria-pressed": String(cur === 0),
-      title: "Everything that was scanned", onclick: () => go("explore/0")}, "All"));
-    for (const r of ROOTS) {
-      seg.append(h("button", {type: "button", "aria-pressed": String(here === r.id && cur !== 0),
-        title: r.path, onclick: () => go("explore/" + r.id)}, rootLabel(r)));
-    }
-    return seg;
   }
   function emptyText(i) {
     const done = CLEANED.get(i);
@@ -1446,7 +1573,7 @@
     for (const g of RAW.clean.groups) {
       if (RULES[g.r].level !== "safe") continue;
       for (const [i] of g.items) {
-        if (CLEANABLE.has(i) && !CLEANED.has(i) && !GONE.has(i)) out.push(i);
+        if (CLEANABLE.has(i) && !CLEANED.has(i) && !GONE.has(i) && inScope(i)) out.push(i);
       }
     }
     return out;
@@ -1526,7 +1653,6 @@
     const freed = Math.min(r.freed || 0, SIZE[i]);
     const files = Math.min(r.files || 0, FILES[i]);
     const info = CLEANABLE.get(i);
-    if (info) freedByLevel[info.rule.level] = (freedByLevel[info.rule.level] || 0) + freed;
     for (let n = i; n >= 0; n = PARENT[n]) {
       SIZE[n] = Math.max(0, SIZE[n] - freed);
       FILES[n] = Math.max(0, FILES[n] - files);
@@ -1566,12 +1692,11 @@
           CLEANED.set(i, r);
           if (r.ok) { freed += r.freed; skipped += r.skipped; applyClean(i, r); } else failed++;
         }
-        if (data.disk) M.disk = data.disk;
+        applyDisk(data.disk);
         done += batch.length;
         if (onProgress) onProgress(done, ids.length, freed);
       }
     } finally {
-      freedTotal += freed;
       // Everything that shows sizes gets repainted from the updated tree.
       if (cur > 0 && GONE.has(cur)) cur = PARENT[cur];
       sel = sel != null && GONE.has(sel) ? null : sel;
@@ -1610,13 +1735,19 @@
     const body = h("div", {class: "card-b s-hero"});
     const ctx = ruleCtx(i);
     const own = ctx && ctx.at === i ? ctx.rule : null;
-    const sub = own ? own.label : i === 0 ? "Scanned folder" : kindText(i);
-    const share = i === 0
-      ? (M.disk && M.disk.total ? "the drive is " + pct(M.disk.used, M.disk.total) + " full" : "")
-      : pct(SIZE[i], SIZE[0]) + " of everything scanned";
+    const sub = own ? own.label : i === 0 ? (MULTI ? "Everything scanned" : "Scanned folder")
+      : ROOT_ID.has(i) ? "Scanned drive" : kindText(i);
+    const top = i === scope || i === 0;
+    const drive = diskFor(i);
+    const share = top
+      ? (drive ? pct(SIZE[i], drive.disk.total) + " of " + drive.name : "")
+      : pct(SIZE[i], SIZE[scope]) + " of " + (scope ? scopeName() : "everything scanned");
     body.append(h("div", {class: "s-top"},
       h("div", null, h("div", {class: "s-name"}, label(i)), h("div", {class: "s-sub"}, sub)),
       h("div", {class: "s-size"}, h("b", null, human(SIZE[i])), share ? h("small", null, share) : null)));
+
+    const space = driveBlock(i, drive, top);
+    if (space) body.append(space);
 
     const parts = comp(i).sort((a, b) => a[0] - b[0]);
     const total = parts.reduce((s, p) => s + p[1], 0);
@@ -1648,10 +1779,37 @@
     if (ctx && (ctx.at === i || ctx.rule.level !== "info")) body.append(whatBlock(i));
     return h("div", {class: "card"}, body);
   }
+  // The whole drive, to scale: what this folder takes, what else is in use,
+  // and what is still free. The size of a folder on its own says nothing
+  // about whether you have a problem; next to the drive it does.
+  function driveBlock(i, drive, top) {
+    if (!drive) return null;
+    const total = drive.disk.total;
+    const here = Math.min(SIZE[i], drive.disk.used);
+    const other = Math.max(0, drive.disk.used - here);
+    const free = Math.max(0, total - here - other);
+    const mine = top ? (MULTI && i === 0 ? "Everything scanned" : "What was scanned here")
+      : "This folder";
+    const box = h("div", null, h("div", {class: "sec-t"},
+      "How " + drive.name + " stands · " + human(total)));
+    box.append(stackBar([
+      {label: mine, value: here, color: "var(--accent)"},
+      {label: "The rest of what is in use", value: other, color: "var(--baseline)"},
+      {label: "Free", value: free, color: "var(--free)"},
+    ], total));
+    const legend = h("div", {class: "s-types"});
+    legend.append(h("span", null, swatch("var(--accent)"), mine + " " + human(here)));
+    if (other) legend.append(h("span", null, swatch("var(--baseline)"),
+      "Everything else in use " + human(other)));
+    legend.append(h("span", null, swatch("var(--free)"),
+      "Free " + human(free) + " · " + pct(free, total)));
+    box.append(legend);
+    return box;
+  }
   // What can still be freed inside `i`, per level (of the listed locations).
   function cleanupUnder(i) {
     const out = {safe: 0, review: 0, tool: 0};
-    if (i === 0) {
+    if (i === 0 || i === scope) {
       for (const level in out) out[level] = levelBytes(level);
       return out;
     }
@@ -1834,25 +1992,11 @@
   const openGroups = new Set();   // groups left open, so a repaint keeps them
 
   // Bytes and places of a group, minus what has already been deleted.
-  function groupBytes(g) {
-    let freed = 0;
-    for (const [i] of g.items) {
-      const r = CLEANED.get(i);
-      if (r && r.ok) freed += r.freed || 0;
-    }
-    return Math.max(0, g.s - freed);
-  }
-  function groupPlaces(g) {
-    let done = 0;
-    for (const [i] of g.items) {
-      const r = CLEANED.get(i);
-      if ((r && r.ok && !r.skipped) || (!r && GONE.has(i))) done++;
-    }
-    return Math.max(0, g.n - done);
-  }
 
   RENDER.cleanup = (box) => {
-    const groups = RAW.clean.groups;
+    // Only what is on the drive in view; a group living entirely on another
+    // one has nothing to say here.
+    const groups = RAW.clean.groups.filter((g) => groupSpan(g)[1] > 0);
     box.append(h("p", {class: "intro"},
       "What PinkWard recognises and how to clean it. Each block says what it is, whether it can be deleted and the safe way to do it. " +
       "The sizes under «Worth a look» are what you would free by deleting the whole thing; you decide what to keep."));
@@ -1870,21 +2014,25 @@
         "Those only get a Delete button when PinkWard runs as administrator; here they keep the note instead."));
     }
 
+    const whole = SIZE[scope] || 1;
     const segs = ACTIONABLE.map((l) => ({label: LV[l].label, value: levelBytes(l), color: "var(--" + STATUS[l] + ")"}));
-    const rest = Math.max(0, SIZE[0] - segs.reduce((s, x) => s + x.value, 0));
-    const summary = h("div", {class: "card-b"}, h("div", {class: "sec-t"}, "Out of everything scanned (" + human(SIZE[0]) + ")"),
-      stackBar(segs.concat([{label: "The rest", value: rest, color: "var(--baseline)"}]), SIZE[0]));
+    const rest = Math.max(0, whole - segs.reduce((s, x) => s + x.value, 0));
+    const summary = h("div", {class: "card-b"}, h("div", {class: "sec-t"},
+      (scope ? "Out of " + scopeName() + " (" : "Out of everything scanned (") + human(whole) + ")"),
+      stackBar(segs.concat([{label: "The rest", value: rest, color: "var(--baseline)"}]), whole));
     const lg = h("div", {class: "legend"});
     for (const l of ACTIONABLE) {
       lg.append(legendRow(lvdot(l), LV[l].label + " · " + plural(levelPlaces(l), "place", "places"),
-        human(levelBytes(l)), pct(levelBytes(l), SIZE[0])));
+        human(levelBytes(l)), pct(levelBytes(l), whole)));
     }
-    lg.append(legendRow(swatch("var(--baseline)"), "The rest", human(rest), pct(rest, SIZE[0])));
+    lg.append(legendRow(swatch("var(--baseline)"), "The rest", human(rest), pct(rest, whole)));
     summary.append(lg);
     box.append(h("div", {class: "card"}, summary));
 
     if (!groups.length) {
-      box.append(h("div", {class: "empty"}, "Nothing known to clean was found."));
+      box.append(h("div", {class: "empty"}, scope
+        ? "Nothing known to clean was found on " + scopeName() + "."
+        : "Nothing known to clean was found."));
       return;
     }
     for (const level of ACTIONABLE) {
@@ -1899,7 +2047,7 @@
         if (ids.length) {
           head.append(h("div", {class: "lvl-act"},
             h("button", {class: "btn danger", type: "button", onclick: () => askClean(ids)},
-              "Delete everything safe"),
+              scope ? "Delete everything safe on " + scopeName() : "Delete everything safe"),
             h("span", {class: "dim"}, plural(ids.length, "place", "places") + " · up to " +
               human(sumOf(ids)) + " · it lists them and asks first")));
         }
@@ -1926,16 +2074,17 @@
       d.dataset.built = "1";
       const body = h("div", {class: "g-body"}, h("p", null, r.desc));
       if (r.how) body.append(h("p", {class: "how"}, h("b", null, "What to do: "), richText(r.how)));
-      const cleanable = g.items.filter(([i]) => CLEANABLE.has(i) && !CLEANED.has(i) && !GONE.has(i)).map(([i]) => i);
+      const here = g.items.filter(([i]) => inScope(i));
+      const cleanable = here.filter(([i]) => CLEANABLE.has(i) && !CLEANED.has(i) && !GONE.has(i)).map(([i]) => i);
       if (cleanable.length > 1 && API) {
         body.append(cleanControls(cleanable, "Delete all " + cleanable.length + " places"));
-      } else if (r.level === "safe" && !g.items.some(([i]) => CLEANABLE.has(i)) && API) {
+      } else if (r.level === "safe" && !here.some(([i]) => CLEANABLE.has(i)) && API) {
         body.append(h("div", {class: "note"}, r.admin && !M.admin
           ? "No Delete button here: this one lives in a Windows folder, so PinkWard has to run as administrator to empty it."
           : "No Delete button here: for this one the right move is what «What to do» says."));
       }
       const locs = h("div", {class: "locs"});
-      for (const [i, s] of g.items) {
+      for (const [i, s] of here) {
         const done = CLEANED.get(i);
         const gone = GONE.has(i) || (done && done.ok);
         const actions = h("span", {class: "clean-row", style: "margin:0"});
@@ -1944,7 +2093,7 @@
         locs.append(h("div", {class: "loc" + (gone ? " gone" : "")}, h("code", null, pathOf(i)),
           h("span", {class: "num"}, human(done && done.ok ? Math.max(0, s - (done.freed || 0)) : s)), actions));
       }
-      const hidden = g.n - g.items.length;
+      const hidden = groupSpan(g)[1] - here.length;
       if (hidden > 0) locs.append(h("div", {class: "loc-more dim"}, "and " + plural(hidden, "smaller place", "smaller places") + "."));
       body.append(locs);
       d.append(body);
@@ -1957,8 +2106,11 @@
   }
 
   RENDER.files = (box) => {
-    const files = RAW.topFiles.filter((f) => !(f[3] >= 0 && GONE.has(f[3])));
-    box.append(h("p", {class: "intro"}, "The files taking up the most space anywhere in the scan. Click one to see it in its folder."));
+    const files = RAW.topFiles.filter((f) => !(f[3] >= 0 && GONE.has(f[3])) &&
+      (!scope || (f[2] >= 0 && inScope(f[2]))));
+    box.append(h("p", {class: "intro"}, scope
+      ? "The files taking up the most space on " + scopeName() + ". Click one to see it in its folder."
+      : "The files taking up the most space anywhere in the scan. Click one to see it in its folder."));
     if (!files.length) {
       box.append(h("div", {class: "card"}, h("div", {class: "empty"}, "No large files.")));
       return;
@@ -2011,7 +2163,8 @@
     box.append(h("p", {class: "intro"},
       "Pick a type to see its extensions and the files of that type taking up the most. " +
       "Click an extension to narrow it down; click a file to see it in its folder." +
-      (freedTotal ? " These totals are from the scan: what you deleted since is not taken off here." : "")));
+      (scope ? " They cover every drive that was scanned, not just " + scopeName() + "." : "") +
+      (freedAll() ? " These totals are from the scan: what you deleted since is not taken off here." : "")));
 
     const head = h("div", {class: "card-b"}, h("div", {class: "sec-t"}, "By kind of content"),
       stackBar(totals.map((t, c) => ({label: CAT[c], value: t[0], color: catColor(c)})), all));
@@ -2281,7 +2434,7 @@
     const foot = $("foot");
     foot.textContent = "";
     const notes = [];
-    if (freedTotal) notes.push("You deleted " + human(freedTotal) + " from this dashboard. Sizes are updated, " +
+    if (freedAll()) notes.push("You deleted " + human(freedAll()) + " from this dashboard. Sizes are updated, " +
       "but the File types tab still shows the totals from the scan.");
     if (M.cloudFiles) notes.push(plural(M.cloudFiles, "file", "files") + " kept online only in OneDrive (" +
       human(M.cloudBytes) + ") are left out: they use no space on the disk.");
@@ -2348,6 +2501,7 @@
 
   applyTheme();
   renderHeader();
+  renderScope();
   renderKpis();
   renderFoot();
   setupMapEvents();

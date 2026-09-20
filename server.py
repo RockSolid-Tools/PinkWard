@@ -13,6 +13,8 @@ http://127.0.0.1 while it keeps running. Precautions:
     the scan (cleaner.plan), never by the request.
   * Cleaning a lot at once arrives in batches, so no single request can hold
     the connection for minutes: the page keeps showing how far it got.
+  * The page carries the scan as it was, so what has been deleted since is
+    handed back on every request: reloading it does not bring anything back.
 """
 
 from __future__ import annotations
@@ -48,7 +50,13 @@ class DashboardServer:
         self.log_path = log_path
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.Lock()  # one cleanup at a time
-        self.page = b""
+        # What has been cleaned, in the order it happened: [[node id, result]].
+        # A list, not a map: JSON would reorder number-like keys, and applying
+        # a folder after something inside it would not add up the same.
+        self.history: list = []
+        self.head = b""
+        self.tail = b""
+        self.has_tag = False
         self.hosts: set = set()
         self.origins: set = set()
         self.httpd = None
@@ -57,10 +65,10 @@ class DashboardServer:
         """Start in the background and return the URL (token included)."""
         with open(self.html_path, encoding="utf-8") as fh:
             html = fh.read()
-        config = json.dumps({"token": self.token})
-        self.page = html.replace(
-            _API_TAG, f'<script id="api" type="application/json">{config}</script>', 1
-        ).encode("utf-8")
+        head, marker, tail = html.partition(_API_TAG)
+        self.head = head.encode("utf-8")
+        self.tail = (tail if marker else "").encode("utf-8")
+        self.has_tag = bool(marker)
 
         self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
         self.httpd.daemon_threads = True
@@ -70,6 +78,20 @@ class DashboardServer:
         self.origins = {f"http://{host}" for host in self.hosts}
         threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{port}/?t={self.token}"
+
+    def page_bytes(self) -> bytes:
+        """The dashboard, told what has been deleted so far."""
+        if not self.has_tag:
+            return self.head
+        with self.lock:
+            config = json.dumps({"token": self.token, "cleaned": self.history,
+                                 "disk": self.free_space()},
+                                ensure_ascii=False, separators=(",", ":"))
+        # Keeps a message that happened to hold "</script>" from closing the
+        # tag early, the same way the payload itself is written.
+        config = config.replace("<", "\\u003c")
+        tag = f'<script id="api" type="application/json">{config}</script>'
+        return self.head + tag.encode("utf-8") + self.tail
 
     def wait(self) -> None:
         """Block until the user presses Enter.
@@ -114,24 +136,28 @@ class DashboardServer:
                 out = cleaner.run(action)
                 cleaner.log(self.log_path, action, out)
                 results[str(ident)] = out
+                self.history.append([ident, out])
                 print(f"  Cleaned: {ascii_text(action.rule.label)}  {human(out['freed'])}"
                       f"  ({ascii_text(out['message'])})  {action.path}", flush=True)
         return {"results": results, "disk": self.free_space()}
 
     def free_space(self) -> dict | None:
-        """How the scanned drives stand now, each drive counted once."""
+        """How the scanned drives stand now: the total, and one by one."""
         per_drive = {}
         for target in self.targets:
             try:
                 usage = shutil.disk_usage(target)
             except OSError:
                 continue
-            per_drive[os.path.splitdrive(os.path.abspath(target))[0].upper()] = usage
+            drive = os.path.splitdrive(os.path.abspath(target))[0].upper()
+            per_drive.setdefault(drive, usage)
         if not per_drive:
             return None
         return {"total": sum(u.total for u in per_drive.values()),
                 "used": sum(u.used for u in per_drive.values()),
-                "free": sum(u.free for u in per_drive.values())}
+                "free": sum(u.free for u in per_drive.values()),
+                "drives": {drive: {"total": u.total, "used": u.used, "free": u.free}
+                           for drive, u in per_drive.items()}}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -172,7 +198,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self._same(token, owner.token):
             return self._reply(403, b"Invalid link: use the one PinkWard shows in the "
                                     b"console.", "text/plain; charset=utf-8")
-        self._reply(200, owner.page, "text/html; charset=utf-8")
+        self._reply(200, owner.page_bytes(), "text/html; charset=utf-8")
 
     def do_POST(self) -> None:
         owner = self.server.owner

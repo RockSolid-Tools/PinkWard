@@ -82,8 +82,10 @@ python pinkward.py D:\ --open      # and open the dashboard in the browser
 ```
 
 Give it **several drives** and they are scanned one after another into a
-single dashboard: the totals add up, and a switch next to the path takes you
-from one drive to another (or to *All* to see them together). A folder inside
+single dashboard. A switch above the summary picks which one the figures are
+about: safe to delete, worth a look, needs a tool, the drive and what was
+scanned, plus the Cleanup and Large files tabs, all follow it, and *All* adds
+them up again. Walking into a drive in Explore picks it too. A folder inside
 another one you also asked for is dropped, so nothing is counted twice.
 
 Or double-click `analyze.bat`, which scans your system drive and opens the
@@ -150,6 +152,9 @@ theme:
 
 - **Summary**: how much can go with no risk, how much is worth a look, drive
   space and what was scanned.
+- **The whole drive, to scale** in the simple view: one bar showing what the
+  folder you are looking at takes, what else is in use and what is still free,
+  above the breakdown of what is inside it.
 - **Explore**, with two views (it remembers the last one you used):
   - **Simple** (the default): how big the folder is, what is inside by type,
     how much can be freed in there and the list of what takes up the most,
@@ -222,6 +227,11 @@ After each delete the dashboard **updates itself**: the safe-to-delete
 figure, the cleanup groups, the folder sizes along the whole path and the
 free space on the drive. Only the File types tab keeps the totals from the
 scan, and the footer says so.
+
+**Reloading it keeps all that.** The page holds the scan as it was taken, so
+PinkWard hands it everything it has deleted since, every time it serves it;
+what is gone stays gone on screen. The copy left in `reports\` is a snapshot
+of the scan instead, and does not know about any of it.
 
 To make deleting possible the dashboard is served on `http://127.0.0.1`
 (never visible from another machine), with a random token per scan. Other

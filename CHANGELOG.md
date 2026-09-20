@@ -2,6 +2,29 @@
 
 What changed in each version of PinkWard. The number lives in `VERSION`.
 
+## 0.0.5 - 2026-09-20
+
+### Added
+
+- **The figures follow the drive you pick.** The switch moved out of the path
+  and sits above the summary, where what it changes is in sight: safe to
+  delete, worth a look, needs a tool, the drive and what was scanned are all
+  about the drive in view, and so are the Cleanup tab and Large files. Walking
+  into a drive in Explore picks it too, so the two never disagree.
+- Deleting everything safe then works on that drive alone, and the button
+  says which one.
+- **The simple view puts a folder against the whole drive**: one bar to
+  scale showing what it takes, what else is in use and what is still free,
+  above the breakdown of what is inside. A size on its own says nothing about
+  whether you have a problem; next to the drive it does.
+
+### Fixed
+
+- Reloading the dashboard brought back everything that had already been
+  deleted, sizes and all: the page carries the scan as it was taken, and a
+  reload read it again from scratch. PinkWard now hands the page what it has
+  deleted since, every time it serves it, so a reload shows the disk as it is.
+
 ## 0.0.4 - 2026-09-20
 
 ### Added
@@ -40,6 +63,12 @@ What changed in each version of PinkWard. The number lives in `VERSION`.
   it and the table still sorts by it.
 - Cleaning goes in batches of 20 places per request, so no single request holds
   the connection while a whole drive is emptied.
+
+### Fixed
+
+- `analyze.bat` with no arguments scanned nothing: `"C:\"` reached Python as
+  `C:"`, because the backslash escapes the closing quote. It also takes
+  several paths now (`analyze.bat C:\ D:\`).
 
 ## 0.0.3 - 2026-09-20
 

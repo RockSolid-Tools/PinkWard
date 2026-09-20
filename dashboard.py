@@ -108,6 +108,29 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
 
     tree = _emit(root, dirs, files)
     index, file_index = tree["index"], tree["file_index"]
+    scanned = scanner.roots_of(result)
+
+    # Which scanned drive a folder belongs to, as a node id. Walked once per
+    # branch and remembered, so a deep tree costs nothing extra.
+    root_pos: dict = {}
+
+    def root_of(node) -> int:
+        chain = []
+        found = None
+        while node is not None:
+            found = root_pos.get(node)
+            if found is not None:
+                break
+            if node.is_root or node.parent is None:
+                found = root_pos[node] = index.get(node, 0)
+                break
+            chain.append(node)
+            node = node.parent
+        if found is None:
+            found = 0
+        for step in chain:
+            root_pos[step] = found
+        return found
 
     rules: list[dict] = []
     rule_pos: dict[int, int] = {}
@@ -145,7 +168,17 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
             if action is not None:
                 actions[pos] = action
             listed.append([pos, finding.size, 1 if action else 0])
-        groups.append({"r": rid(rule), "s": size, "n": len(items), "items": listed})
+        entry = {"r": rid(rule), "s": size, "n": len(items), "items": listed}
+        if len(scanned) > 1:
+            # Split per drive, over every finding and not only the listed
+            # ones, so the parts always add up to the whole.
+            spans: dict[int, list[int]] = {}
+            for finding in items:
+                slot = spans.setdefault(root_of(finding.node), [0, 0])
+                slot[0] += finding.size
+                slot[1] += 1
+            entry["roots"] = {str(key): value for key, value in spans.items()}
+        groups.append(entry)
 
     def file_ids(entries) -> list[int]:
         return [file_index[(node, name)] for _size, _tick, name, node in entries
@@ -157,7 +190,6 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
         slot[0] += size
         slot[1] += count
 
-    scanned = scanner.roots_of(result)
     disks = usage if isinstance(usage, dict) else (
         {scanned[0].name: usage} if usage is not None and scanned else {})
     roots = [{"id": index[node], "path": node.name,
