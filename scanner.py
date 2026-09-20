@@ -66,11 +66,15 @@ class DirNode:
 
     __slots__ = ("name", "parent", "children", "own_size", "own_logical",
                  "own_files", "total", "total_logical", "total_files",
-                 "big_files", "denied", "cats", "ages")
+                 "big_files", "denied", "cats", "ages", "is_root")
 
     def __init__(self, name: str, parent: "DirNode | None") -> None:
         self.name = name
         self.parent = parent
+        # A scanned root: its name is a full path, and nothing above it is
+        # part of that path. Several of them can hang off one holder node
+        # when more than one drive was scanned (see combine).
+        self.is_root = False
         self.children: list[DirNode] = []
         self.own_size = 0        # bytes on disk of the files directly inside
         self.own_logical = 0     # logical bytes of the files directly inside
@@ -89,9 +93,11 @@ class DirNode:
 
     def path(self) -> str:
         parts = [self.name]
-        node = self.parent
+        node = None if self.is_root else self.parent
         while node is not None:
             parts.append(node.name)
+            if node.is_root:
+                break
             node = node.parent
         parts.reverse()
         return os.path.join(parts[0], *parts[1:]) if len(parts) > 1 else parts[0]
@@ -201,6 +207,7 @@ def scan(root_path: str, *, exclude: list[str] | None = None,
     exclude_lower = {e.lower() for e in (exclude or [])}
 
     root = DirNode(root_path, None)
+    root.is_root = True
     result = ScanResult(root)
     result.cluster_size = cluster = cluster_size_for(root_path)
     result.measure = "logical" if logical else "disk"
@@ -432,3 +439,80 @@ def walk_nodes(root: DirNode):
         node = stack.pop()
         yield node
         stack.extend(node.children)
+
+
+def _add_counter(node: DirNode, field: str, other, size: int) -> None:
+    """Add one counter array (cats or ages) onto a node."""
+    if other is None:
+        return
+    own = getattr(node, field)
+    if own is None:
+        setattr(node, field, array("q", other))
+        return
+    for i, value in enumerate(other):
+        if value:
+            own[i] += value
+
+
+def combine(results: list[ScanResult], name: str = "This PC",
+            top_files: int = 60) -> ScanResult:
+    """Several scanned drives as a single tree, with one holder above them.
+
+    The holder is not a real folder: it has no path of its own, and every
+    root below it keeps carrying its own (is_root). Everything downstream -
+    classification, dashboard, report - then works the same whether one drive
+    was scanned or five.
+    """
+    if len(results) == 1:
+        return results[0]
+
+    holder = DirNode(name, None)
+    merged = ScanResult(holder)
+    merged.started_at = min(r.started_at for r in results)
+    merged.elapsed = sum(r.elapsed for r in results)
+    merged.measure = results[0].measure
+    merged.cluster_size = results[0].cluster_size
+    tick = itertools.count()
+
+    for res in results:
+        root = res.root
+        root.parent = holder
+        holder.children.append(root)
+        holder.total += root.total
+        holder.total_logical += root.total_logical
+        holder.total_files += root.total_files
+        _add_counter(holder, "cats", root.cats, N_CATEGORIES)
+        _add_counter(holder, "ages", root.ages, N_AGES)
+
+        for ext, (count, size) in res.by_ext.items():
+            slot = merged.by_ext.get(ext)
+            if slot is None:
+                merged.by_ext[ext] = [count, size]
+            else:
+                slot[0] += count
+                slot[1] += size
+        for item in res.top_files:
+            _push_bounded(merged.top_files, item, top_files)
+        for cat, heap in enumerate(res.top_by_cat):
+            for size, _old, fname, node in heap:
+                _push_bounded(merged.top_by_cat[cat],
+                              (size, next(tick), fname, node), TYPE_TOP)
+        for ext, heap in res.top_by_ext.items():
+            dest = merged.top_by_ext.setdefault(ext, [])
+            for size, _old, fname, node in heap:
+                _push_bounded(dest, (size, next(tick), fname, node), EXT_TOP)
+
+        merged.errors.extend(res.errors)
+        merged.skipped_links += res.skipped_links
+        merged.cloud_only_files += res.cloud_only_files
+        merged.cloud_only_bytes += res.cloud_only_bytes
+        merged.sparse_files += res.sparse_files
+        merged.sparse_saved += res.sparse_saved
+
+    return merged
+
+
+def roots_of(result: ScanResult) -> list[DirNode]:
+    """The scanned roots: the tree itself, or the drives under the holder."""
+    root = result.root
+    return [root] if root.is_root else list(root.children)

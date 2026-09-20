@@ -11,12 +11,15 @@ http://127.0.0.1 while it keeps running. Precautions:
   * It checks the Host and Origin headers (guards against DNS rebinding).
   * The browser only sends ids. What gets deleted, and where, is decided by
     the scan (cleaner.plan), never by the request.
+  * Cleaning a lot at once arrives in batches, so no single request can hold
+    the connection for minutes: the page keeps showing how far it got.
 """
 
 from __future__ import annotations
 
 import http.server
 import json
+import os
 import secrets
 import shutil
 import threading
@@ -31,11 +34,17 @@ _CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inlin
         "frame-ancestors 'none'")
 
 
+MAX_IDS = 400          # ids one request may carry
+MAX_BODY = 1 << 18     # bytes
+
+
 class DashboardServer:
-    def __init__(self, html_path: str, actions: dict, target: str, log_path: str) -> None:
+    def __init__(self, html_path: str, actions: dict, target, log_path: str) -> None:
         self.html_path = html_path
         self.actions = actions        # {dashboard node id: cleaner.Action}
-        self.target = target          # to report free space after cleaning
+        # What was scanned: one path, or several when more than one drive was.
+        self.targets = [target] if isinstance(target, str) else list(target)
+        self.target = self.targets[0] if self.targets else ""
         self.log_path = log_path
         self.token = secrets.token_urlsafe(24)
         self.lock = threading.Lock()  # one cleanup at a time
@@ -63,11 +72,27 @@ class DashboardServer:
         return f"http://127.0.0.1:{port}/?t={self.token}"
 
     def wait(self) -> None:
-        """Block until the user presses Enter (or Ctrl+C)."""
+        """Block until the user presses Enter.
+
+        Ctrl+C in a console copies only when text is selected; without a
+        selection it stops the program, which is a rude surprise for someone
+        who was trying to copy the link. The first one explains itself, a
+        second one quits.
+        """
+        warned = False
         try:
-            input()
-        except (EOFError, KeyboardInterrupt):
-            pass
+            while True:
+                try:
+                    input()
+                    return
+                except EOFError:
+                    return
+                except KeyboardInterrupt:
+                    if warned:
+                        return
+                    warned = True
+                    print("\n  Ctrl+C here quits, it does not copy. Press Enter to close "
+                          "the dashboard,\n  or Ctrl+C again to quit now.", flush=True)
         finally:
             self.stop()
 
@@ -91,12 +116,22 @@ class DashboardServer:
                 results[str(ident)] = out
                 print(f"  Cleaned: {ascii_text(action.rule.label)}  {human(out['freed'])}"
                       f"  ({ascii_text(out['message'])})  {action.path}", flush=True)
-        try:
-            usage = shutil.disk_usage(self.target)
-            disk = {"total": usage.total, "used": usage.used, "free": usage.free}
-        except OSError:
-            disk = None
-        return {"results": results, "disk": disk}
+        return {"results": results, "disk": self.free_space()}
+
+    def free_space(self) -> dict | None:
+        """How the scanned drives stand now, each drive counted once."""
+        per_drive = {}
+        for target in self.targets:
+            try:
+                usage = shutil.disk_usage(target)
+            except OSError:
+                continue
+            per_drive[os.path.splitdrive(os.path.abspath(target))[0].upper()] = usage
+        if not per_drive:
+            return None
+        return {"total": sum(u.total for u in per_drive.values()),
+                "used": sum(u.used for u in per_drive.values()),
+                "free": sum(u.free for u in per_drive.values())}
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
@@ -156,11 +191,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             length = 0
-        if not 0 < length <= 65536:
+        if not 0 < length <= MAX_BODY:
             return self._reply(400, {"error": "size"})
         try:
             body = json.loads(self.rfile.read(length))
-            ids = [int(i) for i in body["ids"]][:1000]
+            ids = [int(i) for i in body["ids"]][:MAX_IDS]
         except (ValueError, KeyError, TypeError):
             return self._reply(400, {"error": "bad request"})
         self._reply(200, owner.clean(ids))

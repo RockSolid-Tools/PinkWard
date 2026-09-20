@@ -67,6 +67,80 @@ def supports_hyperlinks() -> bool:
                                                "ghostty", "Hyper"))
 
 
+def is_elevated() -> bool:
+    """Whether this process is running as administrator."""
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
+
+def to_clipboard(text: str) -> bool:
+    """Put text on the clipboard. Returns whether it worked.
+
+    Handy in an elevated console, where Ctrl+click usually does nothing and
+    Ctrl+C without a selection stops the program instead of copying.
+    """
+    try:
+        import ctypes
+
+        user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+        kernel32.GlobalAlloc.restype = ctypes.c_void_p
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+        kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+        user32.SetClipboardData.restype = ctypes.c_void_p
+        user32.SetClipboardData.argtypes = [ctypes.c_uint, ctypes.c_void_p]
+
+        buffer = ctypes.create_unicode_buffer(text)
+        size = ctypes.sizeof(buffer)
+        if not user32.OpenClipboard(None):
+            return False
+        try:
+            user32.EmptyClipboard()
+            handle = kernel32.GlobalAlloc(0x0002, size)   # GMEM_MOVEABLE
+            if not handle:
+                return False
+            target = kernel32.GlobalLock(handle)
+            if not target:
+                return False
+            ctypes.memmove(target, buffer, size)
+            kernel32.GlobalUnlock(handle)
+            # From here the clipboard owns the handle; it must not be freed.
+            return bool(user32.SetClipboardData(13, handle))   # CF_UNICODETEXT
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return False
+
+
+def open_url(url: str) -> bool:
+    """Open a link in the browser of whoever is sitting at the PC.
+
+    Started from an elevated console, the browser would come up elevated too:
+    a separate profile, and some of them refuse outright. Handing the link to
+    explorer.exe, which is already running as the normal user, opens it the
+    way a double-click would.
+    """
+    if is_elevated():
+        try:
+            import subprocess
+
+            subprocess.Popen(["explorer.exe", url], close_fds=True,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return True
+        except OSError:
+            pass
+    try:
+        import webbrowser
+
+        return bool(webbrowser.open(url))
+    except Exception:
+        return False
+
+
 def ascii_text(text: str) -> str:
     """Drop accents for the console, which does not always take UTF-8."""
     return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
@@ -123,6 +197,15 @@ def _children_breakdown(node: DirNode) -> list[tuple[str, int, bool]]:
     return rows
 
 
+def _base_len(root: DirNode) -> int:
+    """How much of a path to cut off when printing it under the root.
+
+    With several drives scanned there is no common root to cut, so the paths
+    are printed whole.
+    """
+    return (len(root.name.rstrip(os.sep)) + 1) if root.is_root else 0
+
+
 def print_report(result: ScanResult, *, top: int = 20, depth: int = 1,
                  style: Style | None = None, out=None,
                  cleanup: Classification | None = None) -> None:
@@ -155,7 +238,7 @@ def print_report(result: ScanResult, *, top: int = 20, depth: int = 1,
         line(st.bold("  SPACE HOTSPOTS  ") +
              st.dim("(where the weight piles up, without repeating parent folders)"))
         line()
-        base = len(root.name.rstrip(os.sep)) + 1
+        base = _base_len(root)
         for node in spots:
             path = node.path()
             shown = path[base:] if len(path) > base else path
@@ -225,7 +308,7 @@ def _print_cleanup(cleanup: Classification, root: DirNode, top: int, st: Style,
     totals = cleanup.totals()
     groups = cleanup.groups()
     per_level = max(3, top // 4)
-    base = len(root.name.rstrip(os.sep)) + 1
+    base = _base_len(root)
 
     print(st.bold("  CLEANUP  ") +
           st.dim("(what each one is and how to clean it: in the dashboard)"), file=out)

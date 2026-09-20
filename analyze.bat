@@ -1,9 +1,12 @@
 @echo off
 REM Quick launcher: scans the system drive and opens the dashboard in your browser.
-REM You can pass another path:  analyze.bat D:\
+REM You can pass other paths:  analyze.bat D:\   or   analyze.bat C:\ D:\
 setlocal
-set TARGET=%~1
-if "%TARGET%"=="" set TARGET=%SystemDrive%\
+REM What you typed goes through as it is. The default is deliberately not
+REM quoted below: "C:\" reaches Python as C:" because the backslash escapes
+REM the quote, and the scan then looks for a folder that does not exist.
+set "TARGETS=%*"
+if "%~1"=="" set "TARGETS=%SystemDrive%\"
 
 REM "py" comes with the official Python installer. Windows also ships a fake
 REM "python" that only opens the Microsoft Store, so check that it really runs.
@@ -17,7 +20,7 @@ if not defined PY (
   exit /b 1
 )
 
-%PY% "%~dp0pinkward.py" "%TARGET%" --open
+%PY% "%~dp0pinkward.py" %TARGETS% --open
 if errorlevel 1 (
   echo.
   echo The scan could not be completed.

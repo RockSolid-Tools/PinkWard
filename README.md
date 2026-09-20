@@ -76,24 +76,36 @@ code, and `-BootstrapUrl`, this script) with yours.
 ```
 python pinkward.py                 # the current drive (C:\)
 python pinkward.py C:\Users\me     # one folder
+python pinkward.py C:\ D:\         # two drives in one go
+python pinkward.py --all-drives    # every fixed drive on this PC
 python pinkward.py D:\ --open      # and open the dashboard in the browser
 ```
+
+Give it **several drives** and they are scanned one after another into a
+single dashboard: the totals add up, and a switch next to the path takes you
+from one drive to another (or to *All* to see them together). A folder inside
+another one you also asked for is dropped, so nothing is counted twice.
 
 Or double-click `analyze.bat`, which scans your system drive and opens the
 dashboard.
 
 At the end of the report you get the dashboard link,
-`http://127.0.0.1:<port>/?t=...`: Ctrl+click it from Windows Terminal or the
-VS Code terminal. PinkWard serves it **only on your own PC** while it keeps
-running, which is what makes deleting from it possible; press Enter in the
-console when you are done. It also leaves a copy in `reports\<path>.html` you
-can look at later without PinkWard (that copy cannot delete anything). With
-the output redirected, or with `--no-serve`, only the copy is written.
+`http://127.0.0.1:<port>/?t=...`. It is **put on your clipboard** as well, so
+you can just paste it: Ctrl+click works in Windows Terminal and in the VS Code
+terminal, but an elevated console usually ignores it, and Ctrl+C there quits
+PinkWard instead of copying. `--no-clipboard` leaves your clipboard alone.
+
+PinkWard serves the dashboard **only on your own PC** while it keeps running,
+which is what makes deleting from it possible; press Enter in the console when
+you are done. It also leaves a copy in `reports\<path>.html` you can look at
+later without PinkWard (that copy cannot delete anything). With the output
+redirected, or with `--no-serve`, only the copy is written.
 
 ### Options
 
 | Option | What it does |
 |---|---|
+| `-a, --all-drives` | Scan every fixed drive on this PC |
 | `-t, --top N` | How many entries to show in each ranking (20 by default) |
 | `-d, --depth N` | Folder levels in the first breakdown (1 by default) |
 | `--dashboard FILE` | Where to save the dashboard (`reports\<path>.html` by default). `--html` still works as an alias |
@@ -107,6 +119,7 @@ the output redirected, or with `--no-serve`, only the copy is written.
 | `--follow-links` | Follow symlinks and junctions (may count the same data twice) |
 | `--no-report` | Console keeps only the dashboard link |
 | `--no-health` | Do not ask Windows about the health of the drives |
+| `--no-clipboard` | Do not put the dashboard link on the clipboard |
 | `--no-color`, `--quiet` | Output without color / without the progress line |
 
 ## What you get
@@ -176,13 +189,25 @@ drive with 900,000 files it weighs about 7.5 MB and opens in under a second.
 ## Deleting from the dashboard
 
 The *Delete* button only shows up on things marked **Safe to delete** where
-deleting by hand is also the usual practice: temp files, crash dumps, error
-reports and caches (shader, app, Spotify, build...). Precautions:
+deleting by hand cannot break anything installed and cannot lose anything that
+is not downloaded again on its own: temp files, crash dumps, error reports,
+package-manager caches and app caches (browser, shader, Spotify, build...).
+**Delete everything safe** at the top of the Cleanup tab does the lot in one
+go, in batches, telling you how far it got. Precautions:
 
-- **Only inside your user folder**: nothing from the system, nothing that
-  needs administrator rights.
-- **Where an official tool exists, that tool wins**: npm, pip, Windows
-  Update, the browser's own cache... No button there, just the note.
+- **Each rule says how far it reaches.** Most only work inside your user
+  folder, and never that folder itself or its direct children. The ones for
+  places that normally live elsewhere (Steam on another drive, the Windows
+  temp folder) reach there and no further: a drive root, `C:\Windows`,
+  `C:\Users`, `Program Files` and the like are refused as such, however well
+  a rule seems to match them.
+- **Windows' own folders need administrator.** Its temp files, the Windows
+  Update downloads, the blue screen dumps: run PinkWard elevated and they get
+  a button too; otherwise they keep the note, so no button is offered that
+  could only half-work.
+- **Where deleting could lose something, there is no button**: the Office
+  file cache (it can hold changes not yet synced), render caches that cost
+  hours to rebuild, and anything an official tool handles better.
 - **It always asks first**, saying what goes, how much and what to close.
 - For folders it deletes **what is inside** and keeps the folder (programs
   expect to find it). **Anything in use is skipped**, never forced.

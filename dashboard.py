@@ -46,9 +46,10 @@ class Dashboard:
 
 
 def write_dashboard(result: ScanResult, dest: str, *, cleanup: Classification,
-                    usage=None, health=None, max_items: int = MAX_ITEMS) -> Dashboard:
+                    usage=None, health=None, max_items: int = MAX_ITEMS,
+                    elevated: bool = False) -> Dashboard:
     payload, actions = build_payload(result, cleanup, usage, health=health,
-                                     max_items=max_items)
+                                     max_items=max_items, elevated=elevated)
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     # Keeps a file name containing "</script>" from closing the tag early.
     data = data.replace("<", _BS + "u003c")
@@ -68,8 +69,13 @@ def write_dashboard(result: ScanResult, dest: str, *, cleanup: Classification,
 
 
 def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
-                  health=None, max_items: int = MAX_ITEMS) -> tuple[dict, dict]:
-    """The dashboard JSON plus the cleanup actions (node id -> Action)."""
+                  health=None, max_items: int = MAX_ITEMS,
+                  elevated: bool = False) -> tuple[dict, dict]:
+    """The dashboard JSON plus the cleanup actions (node id -> Action).
+
+    `usage` is what shutil.disk_usage said: one answer for a single scan, or
+    {scanned root: answer} when several drives were scanned at once.
+    """
     root = result.root
     dirs, files, cutoff = _select(root, max_items, MIN_ITEM)
     clean_groups = cleanup.groups()
@@ -111,7 +117,8 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
         if pos is None:
             pos = rule_pos[rule.id] = len(rules)
             rules.append({"label": rule.label, "level": rule.level, "desc": rule.desc,
-                          "how": rule.how, "clean": rule.clean, "close": rule.close})
+                          "how": rule.how, "clean": rule.clean, "close": rule.close,
+                          "admin": rule.admin})
         return pos
 
     cls: dict[int, int] = {}
@@ -134,7 +141,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
                    else index.get(finding.node))
             if pos is None:
                 continue
-            action = cleaner.plan(finding)
+            action = cleaner.plan(finding, elevated=elevated)
             if action is not None:
                 actions[pos] = action
             listed.append([pos, finding.size, 1 if action else 0])
@@ -150,8 +157,20 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
         slot[0] += size
         slot[1] += count
 
+    scanned = scanner.roots_of(result)
+    disks = usage if isinstance(usage, dict) else (
+        {scanned[0].name: usage} if usage is not None and scanned else {})
+    roots = [{"id": index[node], "path": node.name,
+              "disk": _usage(disks.get(node.name))}
+             for node in scanned if node in index]
+    combined = _combined_disk(scanned, disks)
+
     meta = {
         "root": root.name,
+        # Where each scanned drive sits in the tree. One entry for a normal
+        # scan; the dashboard shows a drive switch when there are more.
+        "roots": roots,
+        "admin": bool(elevated),
         "version": VERSION,
         "sep": os.sep,
         "date": round(result.started_at),
@@ -166,8 +185,7 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
         "links": result.skipped_links,
         "sparseFiles": result.sparse_files,
         "sparseSaved": result.sparse_saved,
-        "disk": ({"total": usage.total, "used": usage.used, "free": usage.free}
-                 if usage else None),
+        "disk": combined,
         "cats": [label for _key, label in classify.CATEGORIES],
         "ages": list(scanner.AGE_BANDS),
         "levels": {key: {"label": label, "hint": hint}
@@ -201,6 +219,26 @@ def build_payload(result: ScanResult, cleanup: Classification, usage=None, *,
                  for ext in ext_names],
     }
     return payload, actions
+
+
+def _usage(u) -> dict | None:
+    return {"total": u.total, "used": u.used, "free": u.free} if u else None
+
+
+def _combined_disk(scanned, disks: dict) -> dict | None:
+    """The scanned drives added up, counting each drive once."""
+    per_drive = {}
+    for node in scanned:
+        answer = disks.get(node.name)
+        if answer is None:
+            continue
+        drive = os.path.splitdrive(node.name)[0].upper() or node.name.upper()
+        per_drive.setdefault(drive, answer)   # the first root of a drive wins
+    if not per_drive:
+        return None
+    return {"total": sum(u.total for u in per_drive.values()),
+            "used": sum(u.used for u in per_drive.values()),
+            "free": sum(u.free for u in per_drive.values())}
 
 
 def _pick_exts(result: ScanResult) -> list[str]:
@@ -259,17 +297,22 @@ def _include(node: DirNode | None, dirs: set) -> None:
 
 def _locate(root: DirNode, folder: str) -> DirNode | None:
     """The DirNode for a path inside the scan, or None."""
-    base = root.name.rstrip(os.sep)
-    if not folder.lower().startswith(base.lower()):
-        return None
-    node = root
-    for part in folder[len(base):].split(os.sep):
-        if not part:
+    starts = [root] if root.is_root else list(root.children)
+    starts.sort(key=lambda n: len(n.name), reverse=True)   # the deepest root wins
+    for start in starts:
+        base = start.name.rstrip(os.sep)
+        if not folder.lower().startswith(base.lower()):
             continue
-        node = next((c for c in node.children if c.name == part), None)
-        if node is None:
-            return None
-    return node
+        node = start
+        for part in folder[len(base):].split(os.sep):
+            if not part:
+                continue
+            node = next((c for c in node.children if c.name == part), None)
+            if node is None:
+                break
+        if node is not None:
+            return node
+    return None
 
 
 def _emit(root: DirNode, dirs: set, files: dict) -> dict:

@@ -3,11 +3,16 @@
 Good practices it follows on purpose:
 
   * It only cleans "safe" rules that carry `clean` in classify.py: temp files,
-    dumps and caches, where deleting by hand is the usual thing to do. What
-    has an official tool (npm, pip, the browser itself, Windows Update...)
-    keeps the note instead of a button.
-  * Only inside your user folder, and never that folder itself or its direct
-    children: nothing from the system, nothing needing administrator rights.
+    dumps and caches, where deleting by hand cannot break what is installed.
+    What would lose something that is not downloaded again on its own keeps
+    the note instead of a button.
+  * Where it may delete is part of the rule. By default only inside your user
+    folder, and never that folder itself or its direct children. Rules marked
+    `scope="anywhere"` reach the places that normally live elsewhere (Steam on
+    another drive, the Windows temp folder); even then a drive root and the
+    protected folders themselves are refused.
+  * Rules marked `admin` are only offered when PinkWard runs elevated: a
+    button that could only ever half-work is worse than the note.
   * Right before deleting it checks again that the path exists, that it is not
     a link and that it is still what the scan said it was.
   * It never follows links, junctions or symlinks: it neither walks into them
@@ -32,6 +37,14 @@ from scanner import is_link, long_path
 
 FILE_ATTRIBUTE_READONLY = 0x1
 
+# Folders that are never deleted as such, however well a rule matches them.
+# A rule reaching anywhere may clean inside them, never the folder itself.
+PROTECTED = frozenset((
+    "windows", "winnt", "program files", "program files (x86)", "programdata",
+    "users", "documents and settings", "$recycle.bin", "recovery", "boot",
+    "system volume information", "windows.old",
+))
+
 
 class Action:
     """One concrete thing the dashboard is allowed to clean."""
@@ -45,17 +58,37 @@ class Action:
         self.rule = rule
 
 
-def plan(finding, home: str | None = None) -> Action | None:
+def plan(finding, home: str | None = None, *, elevated: bool = False) -> Action | None:
     """The cleanup action for a finding, or None when the app does not offer it."""
     rule = finding.rule
     if rule.level != "safe" or not rule.clean:
         return None
+    if rule.admin and not elevated:
+        return None
     path = finding.node.path()
     if finding.file:
         path = os.path.join(path, finding.file)
-    if not in_home(path, home):
+    if not allowed(path, rule, home):
         return None
     return Action(path, finding.file is None, rule.clean, rule)
+
+
+def allowed(path: str, rule=None, home: str | None = None) -> bool:
+    """Whether the app may delete this path at all, by the rule's own reach."""
+    if getattr(rule, "scope", "home") != "anywhere":
+        return in_home(path, home)
+    parts = _below_drive(path)
+    if not parts:
+        return False                      # a drive root, never
+    return len(parts) >= 2 or parts[0] not in PROTECTED
+
+
+def _below_drive(path: str) -> list[str]:
+    """The components of a path under its drive, lowercased."""
+    rest = os.path.splitdrive(os.path.normcase(os.path.abspath(path)))[1]
+    if os.altsep:
+        rest = rest.replace(os.altsep, os.sep)
+    return [p for p in rest.split(os.sep) if p]
 
 
 def in_home(path: str, home: str | None = None) -> bool:
@@ -75,8 +108,8 @@ def run(action: Action, home: str | None = None) -> dict:
     """Clean one action. Returns what went, what was skipped and a message."""
     out = {"ok": False, "freed": 0, "files": 0, "skipped": 0, "links": 0, "message": ""}
 
-    if not in_home(action.path, home):
-        out["message"] = "Refused: it is outside your user folder."
+    if not allowed(action.path, action.rule, home):
+        out["message"] = "Refused: the app is not allowed to delete there."
         return out
     try:
         st = os.lstat(long_path(action.path))

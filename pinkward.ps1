@@ -17,8 +17,12 @@
     To skip the menu, pass what you want:
         iex "& { $(irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1) } -Path 'D:\'"
 
+        iex "& { $(irm https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1) } -Path 'C:\','D:\'"
+
 .PARAMETER Path
-    Drive or folder to scan. Defaults to the Windows drive.
+    Drive or folder to scan. Defaults to the Windows drive. Several can be
+    given ('C:','D:'): they are scanned in one go and the dashboard walks
+    all of them.
 
 .PARAMETER Source
     Zip holding PinkWard's source. A URL or a local path.
@@ -44,7 +48,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Path = "$env:SystemDrive\",
+    [string[]]$Path = @("$env:SystemDrive\"),
     [string]$Source = "https://github.com/RockSolid-Tools/PinkWard/archive/refs/heads/main.zip",
     [string]$Sha256,
     [string]$BootstrapUrl = "https://raw.githubusercontent.com/RockSolid-Tools/PinkWard/main/pinkward.ps1",
@@ -155,10 +159,15 @@ function Read-Choices {
     $drives = @([IO.DriveInfo]::GetDrives() |
         Where-Object { $_.IsReady -and $_.DriveType -eq "Fixed" })
     if (-not $drives.Count) { return $opt }
-    $sel = 0
+    # Which drives are on. The Windows one to begin with; a number flips one,
+    # and they are all scanned in one go.
+    $picked = New-Object "System.Collections.Generic.HashSet[int]"
     for ($i = 0; $i -lt $drives.Count; $i++) {
-        if ($drives[$i].Name -eq "$env:SystemDrive\") { $sel = $i }
+        if ($drives[$i].Name -eq "$env:SystemDrive\") { [void]$picked.Add($i) }
     }
+    if ($picked.Count -eq 0) { [void]$picked.Add(0) }
+    $chosen = { @(0..($drives.Count - 1) | Where-Object { $picked.Contains($_) } |
+                  ForEach-Object { $drives[$_].Name }) }
     $onOff = { param($b) if ($b) { "on " } else { "off" } }
 
     while ($true) {
@@ -168,7 +177,7 @@ function Read-Choices {
         Write-Host ""
         for ($i = 0; $i -lt $drives.Count; $i++) {
             $d = $drives[$i]
-            $here = (-not $opt.Path) -and ($i -eq $sel)
+            $here = (-not $opt.Path) -and $picked.Contains($i)
             $label = if ($d.VolumeLabel) { $d.VolumeLabel } else { "" }
             Write-Host ("   {0} [{1}]  {2,-3} {3,-14} {4} free of {5}" -f `
                     $(if ($here) { ">" } else { " " }), ($i + 1), $d.Name.TrimEnd("\"),
@@ -190,18 +199,29 @@ function Read-Choices {
         Write-Host ("     [K]  keep the temp folder .... " + (& $onOff $opt.Keep) +
                     "   normally everything is wiped") -ForegroundColor Gray
         Write-Host ""
+        if (-not $opt.Path -and $drives.Count -gt 1) {
+            Write-Host ("     a number turns a drive on or off: " +
+                        "several at once is fine") -ForegroundColor DarkGray
+        }
         Write-Host "   Enter to start  ·  number or letter to change  ·  Q to quit" -ForegroundColor DarkGray
 
         $key = & $ReadKey
         $ch = "$($key.KeyChar)".ToUpper()
         if ($key.Key -eq "Enter") {
-            if (-not $opt.Path) { $opt.Path = $drives[$sel].Name }
+            if (-not $opt.Path) { $opt.Path = & $chosen }
             return $opt
         }
         if ($key.Key -eq "Escape" -or $ch -eq "Q") { return $null }
         if ($ch -match "^[1-9]$") {
             $n = [int]$ch
-            if ($n -le $drives.Count) { $sel = $n - 1; $opt.Path = $null }
+            if ($n -le $drives.Count) {
+                $i = $n - 1
+                # A typed folder was in charge: the numbers take over again.
+                if ($opt.Path) { $opt.Path = $null }
+                elseif ($picked.Contains($i)) {
+                    if ($picked.Count -gt 1) { [void]$picked.Remove($i) }
+                } else { [void]$picked.Add($i) }
+            }
         } elseif ($ch -eq "A") { $opt.Admin = -not $opt.Admin }
         elseif ($ch -eq "P") { $opt.Portable = -not $opt.Portable }
         elseif ($ch -eq "O") { $opt.NoOpen = -not $opt.NoOpen }
@@ -241,7 +261,8 @@ if (-not $given -and $canAsk) {
 if ($Admin -and -not (Test-Admin)) {
     if ($BootstrapUrl -like "*CHANGE-ME*") { throw "-Admin needs -BootstrapUrl to be set." }
     Write-Step "Asking for administrator rights..."
-    $inner = "& ([scriptblock]::Create((irm '$BootstrapUrl'))) -Path '$Path' -Source '$Source'"
+    $paths = ($Path | ForEach-Object { "'" + $_.Replace("'", "''") + "'" }) -join ","
+    $inner = "& ([scriptblock]::Create((irm '$BootstrapUrl'))) -Path $paths -Source '$Source'"
     if ($Portable) { $inner += " -Portable" }
     if ($NoOpen) { $inner += " -NoOpen" }
     if ($Keep) { $inner += " -Keep" }

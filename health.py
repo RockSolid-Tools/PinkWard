@@ -179,6 +179,17 @@ def drive_letter(path: str) -> str:
     return drive[0].upper() if drive[1:2] == ":" else ""
 
 
+def drive_letters(target) -> list[str]:
+    """The letters of what was scanned: one path or several."""
+    paths = [target] if isinstance(target, str) else list(target)
+    out: list[str] = []
+    for path in paths:
+        letter = drive_letter(path)
+        if letter and letter not in out:
+            out.append(letter)
+    return out
+
+
 def normalize(raw: dict, target: str) -> dict:
     """Turn the raw answer into the few things the dashboard shows."""
     if not raw or raw.get("error"):
@@ -186,7 +197,9 @@ def normalize(raw: dict, target: str) -> dict:
                 "disks": [], "volumes": [], "events": [], "admin": False,
                 "eventDays": EVENT_DAYS}
 
-    letter = drive_letter(target)
+    letters = drive_letters(target)
+    scanned_letters = set(letters)
+    letter = letters[0] if letters else ""
     by_disk: dict[str, list[str]] = {}
     for row in _as_list(raw.get("map")):
         by_disk.setdefault(str(row.get("disk")), []).append(str(row.get("letter")))
@@ -208,7 +221,7 @@ def normalize(raw: dict, target: str) -> dict:
             "health": row.get("health", ""),
             "size": _number(row.get("size")) or 0,
             "free": _number(row.get("free")) or 0,
-            "scanned": row.get("letter", "") == letter,
+            "scanned": row.get("letter", "") in scanned_letters,
         })
     volume_health = {v["letter"]: v["health"] for v in volumes}
 
@@ -289,7 +302,7 @@ def normalize(raw: dict, target: str) -> dict:
             "writeErr": write_err,
             "predict": predict,
             "letters": letters,
-            "scanned": letter in letters,
+            "scanned": bool(scanned_letters.intersection(letters)),
             "level": level,
             "notes": notes,
         })
@@ -305,4 +318,5 @@ def normalize(raw: dict, target: str) -> dict:
         "seriousEvents": serious_events,
         "eventDays": EVENT_DAYS,
         "scannedLetter": letter,
+        "scannedLetters": letters,
     }

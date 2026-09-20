@@ -17,9 +17,19 @@ Rule levels:
   info    only explains what the folder is
 
 Some "safe" rules carry `clean`: the dashboard can delete those itself (see
-cleaner.py). Only where deleting by hand is the usual practice; when there is
-an official tool (npm, pip, the browser itself, Windows Update...) the rule
-keeps the note and gets no button.
+cleaner.py). A rule gets a button when deleting by hand cannot break anything
+that is installed or lose anything that is not downloaded again on its own;
+where that is not true (unsynced Office copies, render caches that cost hours
+to rebuild) the rule keeps the note and gets no button.
+
+Two more things say where the app may delete:
+
+  scope   "home" (the default) only inside the user folder; "anywhere" for
+          places that normally live elsewhere (Steam on another drive, the
+          Windows temp folder). cleaner.py still refuses drive roots and the
+          protected folders.
+  admin   the delete needs an elevated PinkWard; otherwise no button is
+          offered and the note stands on its own.
 
 Windows only: every pattern is a Windows path.
 """
@@ -107,10 +117,10 @@ class Rule:
     """A known folder or file: what it is and what to do with it."""
 
     __slots__ = ("id", "patterns", "level", "label", "desc", "how", "stop", "unless",
-                 "clean", "close")
+                 "clean", "close", "scope", "admin")
 
     def __init__(self, patterns, level, label, desc, how, stop, unless, clean,
-                 close) -> None:
+                 close, scope, admin) -> None:
         self.id = -1
         self.patterns = patterns
         self.level = level
@@ -125,6 +135,8 @@ class Rule:
         # stays), "folder" (the whole folder), "file" or None.
         self.clean = clean
         self.close = close    # what to close first ("your games"...)
+        self.scope = scope    # "home" or "anywhere"
+        self.admin = admin    # needs an elevated PinkWard
 
 
 class Finding:
@@ -197,12 +209,12 @@ def _is_glob(part: str) -> bool:
 
 
 def _add(target: list[Rule], patterns, level, label, desc, how="", *, stop=None,
-         unless=(), clean=None, close=None) -> None:
+         unless=(), clean=None, close=None, scope="home", admin=False) -> None:
     if isinstance(patterns, str):
         patterns = (patterns,)
     rule = Rule([_compile(p) for p in patterns], level, label, desc, how,
                 level in ACTIONABLE if stop is None else stop,
-                [_compile(p) for p in unless], clean, close)
+                [_compile(p) for p in unless], clean, close, scope, admin)
     rule.id = len(DIR_RULES) + len(FILE_RULES)
     target.append(rule)
     for pattern in rule.patterns:
@@ -235,31 +247,41 @@ def _file(*args, **kwargs) -> None:
 _dir(("?:/Windows/Temp", "?:/Windows/SystemTemp"), "safe", "Windows temp files",
      "Temporary files left by the system and by installers that run as administrator.",
      "Settings > System > Storage > Temporary files, or delete the contents as "
-     "administrator.")
+     "administrator.",
+     clean="contents", scope="anywhere", admin=True)
 _dir("?:/Windows/SoftwareDistribution/Download", "safe", "Windows Update downloads",
      "Update packages that were already downloaded. Windows downloads them again if "
      "it ever needs them.",
-     "As administrator: `net stop wuauserv`, empty the folder and `net start wuauserv`.")
+     "As administrator: `net stop wuauserv`, empty the folder and `net start wuauserv`.",
+     clean="contents", scope="anywhere", admin=True,
+     close="Windows Update if it is installing something")
 _dir("**/DeliveryOptimization/Cache", "safe", "Delivery Optimization files",
      "Copies of updates that Windows shares with other PCs on your network.",
-     "Settings > System > Storage > Temporary files > Delivery Optimization Files.")
+     "Settings > System > Storage > Temporary files > Delivery Optimization Files.",
+     clean="contents", scope="anywhere", admin=True)
 _dir("?:/Windows/Minidump", "safe", "Blue screen minidumps",
      "Diagnostic data saved on every blue screen.",
-     "Safe to empty (Disk Cleanup > System error memory dump files).")
+     "Safe to empty (Disk Cleanup > System error memory dump files).",
+     clean="contents", scope="anywhere", admin=True)
 _dir("?:/Windows/LiveKernelReports", "safe", "Kernel diagnostic reports",
      "Dumps Windows writes when a driver stops responding.",
-     "Safe to empty as administrator.")
-_dir(("?:/ProgramData/Microsoft/Windows/WER", "**/AppData/Local/Microsoft/Windows/WER"),
-     "safe", "Windows error reports",
-     "Crash reports from programs, either queued to send or already archived.",
+     "Safe to empty as administrator.",
+     clean="contents", scope="anywhere", admin=True)
+_dir("**/AppData/Local/Microsoft/Windows/WER", "safe", "Windows error reports",
+     "Crash reports from your programs, either queued to send or already archived.",
      "Disk Cleanup > Windows error reports, or empty the folder.",
      clean="contents")
+_dir("?:/ProgramData/Microsoft/Windows/WER", "safe", "Windows error reports (shared)",
+     "Crash reports from services and from programs running as administrator.",
+     "Disk Cleanup > Windows error reports, or empty the folder as administrator.",
+     clean="contents", scope="anywhere", admin=True)
 _dir("?:/Windows/Panther", "safe", "Windows setup logs",
      "Logs from the last Windows installation or upgrade.",
-     "Safe to empty as administrator once Windows is running fine.")
+     "Safe to empty as administrator once Windows is running fine.",
+     clean="contents", scope="anywhere", admin=True)
 _dir("?:/PerfLogs", "safe", "Performance logs",
      "Reports from the Performance Monitor. Usually empty.",
-     "Safe to empty.")
+     "Safe to empty.", clean="contents", scope="anywhere", admin=True)
 _dir("?:/Windows/Logs", "review", "Windows logs",
      "Setup and servicing logs. They are usually small; when they grow it is "
      "normally the CBS ones.",
@@ -336,13 +358,15 @@ _dir("?:/ProgramData/Microsoft/Windows/Virtual Hard Disks", "review", "Hyper-V d
      "Virtual machine disks for Hyper-V.",
      "Delete the machines you do not use from Hyper-V Manager.")
 _dir("?:/ProgramData/NVIDIA Corporation/Downloader", "safe", "NVIDIA driver downloads",
-     "Driver installers downloaded by the NVIDIA app.", "Safe to empty.")
+     "Driver installers downloaded by the NVIDIA app.", "Safe to empty.",
+     clean="contents", scope="anywhere")
 _dir("?:/ProgramData", "info", "Program data",
      "Shared data for installed programs: settings, caches, licenses.",
      "Do not delete the whole folder; there are specific caches inside that can go.")
 _dir(("?:/AMD", "?:/NVIDIA", "?:/Intel"), "safe", "Driver installer leftovers",
      "Files the graphics or chipset installer extracts and never cleans up.",
-     "Safe to delete: the driver is already installed.")
+     "Safe to delete: the driver is already installed.",
+     clean="contents", scope="anywhere")
 _dir("?:/Program Files/WindowsApps", "system", "Microsoft Store apps",
      "Store and system apps. This is a protected folder.",
      "Uninstall from Settings > Apps; from there you can also move some apps to "
@@ -401,7 +425,8 @@ _dir(("**/User Data/*/Cache", "**/User Data/*/Code Cache", "**/User Data/*/GPUCa
       "**/Mozilla/Firefox/Profiles/*/cache2"),
      "safe", "Browser cache",
      "Pages, scripts and images your browser keeps so sites load faster.",
-     "From the browser: Clear browsing data > Cached images and files.")
+     "From the browser: Clear browsing data > Cached images and files.",
+     clean="contents", close="the browser it belongs to")
 _dir("**/User Data/OptGuideOnDeviceModel", "review", "Chrome on-device AI model",
      "The local AI model (Gemini Nano) behind some Chrome features.",
      "If you delete it, Chrome downloads it again while its AI features stay on.")
@@ -433,26 +458,32 @@ _dir("?:/Users/*/AppData/Local/Packages", "info", "Microsoft Store app data",
 # -- Package managers: they have their own cleanup command, which is the
 #    recommended way, so they carry no `clean`. --
 _dir(("**/AppData/Local/pip/Cache", "**/pip/Cache"), "safe", "pip cache",
-     "Python packages downloaded by pip.", "`pip cache purge`")
+     "Python packages downloaded by pip.", "`pip cache purge`", clean="contents")
 _dir(("**/AppData/Local/npm-cache", "**/AppData/Roaming/npm-cache", "**/.npm/_cacache"),
      "safe", "npm cache",
-     "Node packages downloaded by npm.", "`npm cache clean --force`")
+     "Node packages downloaded by npm.", "`npm cache clean --force`",
+     clean="contents")
 _dir("**/AppData/Local/Yarn/Cache", "safe", "Yarn cache",
-     "Node packages downloaded by Yarn.", "`yarn cache clean`")
+     "Node packages downloaded by Yarn.", "`yarn cache clean`", clean="contents")
 _dir(("**/AppData/Local/pnpm/store", "**/.local/share/pnpm/store"),
      "safe", "pnpm store",
      "Packages shared by every project that uses pnpm.",
-     "`pnpm store prune` removes only what no project uses.")
+     "`pnpm store prune` removes only what no project uses; emptying the whole store "
+     "costs a download on the next install and breaks nothing.",
+     clean="contents", close="anything installing packages right now")
 _dir(("**/AppData/Local/NuGet/v3-cache", "**/.nuget/packages"), "safe", "NuGet cache",
-     ".NET packages downloaded for your projects.",
-     "`dotnet nuget locals all --clear`")
+     ".NET packages downloaded for your projects; they come back on the next "
+     "restore.",
+     "`dotnet nuget locals all --clear`", clean="contents", close="Visual Studio")
 _dir("**/AppData/Local/go-build", "safe", "Go build cache",
-     "Build results Go reuses between compiles.", "`go clean -cache`")
+     "Build results Go reuses between compiles.", "`go clean -cache`",
+     clean="contents")
 _dir("**/AppData/Local/uv/cache", "safe", "uv cache",
-     "Python packages downloaded by uv.", "`uv cache clean`")
+     "Python packages downloaded by uv.", "`uv cache clean`", clean="contents")
 _dir("**/AppData/Local/Cypress/Cache", "safe", "Cypress binaries",
      "Cypress versions downloaded for your tests.",
-     "`npx cypress cache prune` keeps only the current one.")
+     "`npx cypress cache prune` keeps only the current one; emptying it all means "
+     "one more download.", clean="contents")
 _dir(("**/AppData/Local/electron/Cache", "**/AppData/Local/electron-builder/Cache"),
      "safe", "Electron cache",
      "Electron binaries downloaded while building apps.",
@@ -465,19 +496,25 @@ _dir("**/AppData/Roaming/npm/node_modules", "review", "Global npm packages",
      "List them with `npm ls -g --depth=0` and remove what you do not use with "
      "`npm uninstall -g <package>`.")
 _dir("**/AppData/Local/Composer", "safe", "Composer cache",
-     "PHP packages downloaded by Composer.", "`composer clear-cache`")
+     "PHP packages downloaded by Composer.", "`composer clear-cache`",
+     clean="contents")
 _dir("**/scoop/cache", "safe", "Scoop download cache",
-     "Installers Scoop keeps after installing an app.", "`scoop cache rm *`")
+     "Installers Scoop keeps after installing an app.", "`scoop cache rm *`",
+     clean="contents", scope="anywhere")
 _dir("?:/ProgramData/chocolatey/lib", "review", "Chocolatey packages",
      "Programs installed with Chocolatey.",
      "`choco list --local-only` lists them; remove with `choco uninstall <package>`.")
 _dir(("**/vcpkg/packages", "**/vcpkg/buildtrees", "**/vcpkg/downloads"),
      "safe", "vcpkg build files",
-     "Sources and build output for C++ libraries installed with vcpkg.",
-     "`vcpkg remove --outdated` and deleting buildtrees/downloads is the usual way.")
+     "Sources and build output for C++ libraries installed with vcpkg. The libraries "
+     "you installed live in `installed`, which is left alone.",
+     "`vcpkg remove --outdated` and deleting buildtrees/downloads is the usual way.",
+     clean="contents", scope="anywhere")
 _dir(("**/anaconda3/pkgs", "**/miniconda3/pkgs", "**/miniforge3/pkgs", "**/.conda/pkgs"),
      "safe", "conda package cache",
-     "Packages conda keeps after installing them.", "`conda clean --all`")
+     "Packages conda keeps after installing them. Your environments keep working: "
+     "they only lose the copy kept for the next install.",
+     "`conda clean --all`", clean="contents", scope="anywhere")
 
 # -- Development --
 _dir("**/node_modules", "review", "Node dependencies",
@@ -516,12 +553,14 @@ _dir(("**/.cargo/registry", "**/.cargo/git"), "safe", "Cargo cache",
      "Rust crates that were downloaded.", "Safe to empty; Cargo downloads them again.",
      clean="contents")
 _dir("**/go/pkg/mod", "safe", "Go modules",
-     "Go modules downloaded for your projects.", "`go clean -modcache`")
+     "Go modules downloaded for your projects.", "`go clean -modcache`",
+     clean="contents")
 _dir(("**/AppData/Local/JetBrains/*/caches", "**/AppData/Local/JetBrains/*/index",
       "**/AppData/Local/JetBrains/*/log"),
      "safe", "JetBrains IDE cache",
      "Indexes and caches of IntelliJ, PyCharm, WebStorm, Rider...",
-     "From the IDE: File > Invalidate Caches / Restart.")
+     "From the IDE: File > Invalidate Caches / Restart.",
+     clean="contents", close="your JetBrains IDEs")
 _dir("**/AppData/Local/JetBrains/Toolbox/apps", "review", "JetBrains IDE versions",
      "IDE versions installed by JetBrains Toolbox, including older ones.",
      "In Toolbox, remove the versions you no longer use (Settings > Clean up).")
@@ -534,7 +573,7 @@ _dir("**/AppData/Local/Microsoft/VisualStudio", "info", "Visual Studio user data
      "inside are rebuilt on their own.")
 _dir("**/AppData/Local/Unity/cache", "safe", "Unity cache",
      "Packages and assets Unity keeps so projects open faster.",
-     "Safe to empty; Unity downloads them again.")
+     "Safe to empty; Unity downloads them again.", clean="contents", close="Unity")
 _dir("**/Unity/Hub/Editor", "review", "Unity editor versions",
      "Full Unity editor installs, one folder per version.",
      "Remove versions you no longer use from Unity Hub > Installs.")
@@ -596,11 +635,13 @@ _dir("?:/Users/*/source/repos", "info", "Visual Studio projects",
 # -- Games --
 _dir("**/steamapps/shadercache", "safe", "Steam shader cache",
      "Precompiled shaders for your Steam games.",
-     "Safe to delete; Steam downloads or compiles them again.")
+     "Safe to delete; Steam downloads or compiles them again.",
+     clean="contents", scope="anywhere", close="Steam")
 _dir(("**/steamapps/downloading", "**/steamapps/temp"), "safe",
      "Unfinished Steam downloads",
-     "Leftovers from Steam downloads and updates.",
-     "Safe to delete with Steam closed.")
+     "Leftovers from Steam downloads and updates. A download you paused starts over.",
+     "Safe to delete with Steam closed.",
+     clean="contents", scope="anywhere", close="Steam")
 _dir("**/steamapps/workshop", "review", "Steam Workshop content",
      "Mods, maps and other content downloaded from the Workshop.",
      "They go away when you unsubscribe in the Workshop or uninstall the game.")
@@ -612,7 +653,8 @@ _dir(("**/Steam/appcache", "**/Steam/config/htmlcache", "**/Steam/logs",
       "**/Steam/depotcache"),
      "safe", "Steam client cache",
      "Caches and logs of the Steam client itself.",
-     "Safe to delete with Steam closed; it rebuilds them.")
+     "Safe to delete with Steam closed; it rebuilds them.",
+     clean="contents", scope="anywhere", close="Steam")
 _dir("**/Epic Games/UE_*", "review", "Unreal Engine",
      "Full Unreal Engine installs, one folder per version.",
      "Remove versions you do not use from the Epic Games Launcher > Unreal Engine "
@@ -622,7 +664,8 @@ _dir("**/Epic Games", "review", "Epic Games",
      "Uninstall what you do not play from Epic Games Launcher > Library.")
 _dir("**/EpicGamesLauncher/Saved/webcache*", "safe", "Epic launcher cache",
      "Web cache of the Epic Games Launcher store pages.",
-     "Safe to delete with the launcher closed.")
+     "Safe to delete with the launcher closed.",
+     clean="contents", close="the Epic Games Launcher")
 _dir("**/Riot Games", "review", "Riot games",
      "League of Legends, Valorant, Teamfight Tactics and the Riot client.",
      "Uninstall what you do not play from Settings > Apps.")
@@ -630,7 +673,8 @@ _dir("**/Ubisoft Game Launcher/games", "review", "Ubisoft games",
      "Games installed with Ubisoft Connect.", "Uninstall from Ubisoft Connect.")
 _dir("**/Ubisoft Game Launcher/cache", "safe", "Ubisoft launcher cache",
      "Cache of the Ubisoft Connect launcher.",
-     "Safe to delete with the launcher closed.")
+     "Safe to delete with the launcher closed.",
+     clean="contents", scope="anywhere", close="Ubisoft Connect")
 _dir(("**/GOG Galaxy/Games", "?:/GOG Games"), "review", "GOG games",
      "Games installed with GOG Galaxy.", "Uninstall from GOG Galaxy.")
 _dir(("**/EA Games", "**/EA Desktop", "**/Origin Games"), "review", "EA games",
@@ -692,7 +736,8 @@ _dir("**/AppData/Local/Google/DriveFS", "review", "Google Drive cache",
      "the cloud.")
 _dir("**/Dropbox/.dropbox.cache", "safe", "Dropbox cache",
      "Copies Dropbox keeps of recently synced files.",
-     "Safe to empty with Dropbox closed; it rebuilds itself.")
+     "Safe to empty with Dropbox closed; it rebuilds itself.",
+     clean="contents", close="Dropbox")
 _dir(("?:/Users/*/Dropbox", "?:/Users/*/Google Drive", "?:/Users/*/iCloudDrive",
       "?:/Users/*/MEGA", "?:/Users/*/pCloudDrive", "?:/Users/*/Box", "?:/Users/*/Sync"),
      "info", "Synced cloud folder",
@@ -741,7 +786,8 @@ _dir("**/MobileSync/Backup", "review", "iPhone/iPad backups",
      "Delete old ones from iTunes or the Apple Devices app (Manage backups).")
 _dir("**/Apple Computer/iTunes/iPhone Software Updates", "safe", "iOS update files",
      "iOS installers downloaded to update your devices.",
-     "Safe to delete; they download again when needed.")
+     "Safe to delete; they download again when needed.",
+     clean="contents", close="iTunes or the Apple Devices app")
 _dir("**/Plex Media Server/Metadata", "review", "Plex metadata",
      "Covers, previews and metadata for your Plex library.",
      "In Plex: Settings > Library, turn off the preview thumbnails you do not need, "
@@ -822,7 +868,8 @@ _file("?:/swapfile.sys", "system", "App swap file (swapfile.sys)",
       "Leave alone: it is tied to the page file.")
 _file("?:/Windows/MEMORY.DMP", "safe", "Full memory dump",
       "Memory dump from the last blue screen.",
-      "Safe to delete (Disk Cleanup > System error memory dump files).")
+      "Safe to delete (Disk Cleanup > System error memory dump files).",
+      clean="file", scope="anywhere", admin=True)
 _file("**/ext4.vhdx", "tool", "WSL virtual disk",
       "The disk of a Linux distribution (WSL). It grows as you use it but never "
       "shrinks on its own.",
@@ -844,7 +891,7 @@ _file(("**/*.tmp", "**/*.temp"), "safe", "Temp file",
       "Safe to delete if it is not in use.", clean="file")
 _file("**/*.etl", "safe", "Trace log",
       "An event trace Windows or a driver wrote for diagnostics.",
-      "Safe to delete.")
+      "Safe to delete when nothing is tracing right now.", clean="file")
 _file("**/*.iso", "review", "Disc image",
       "A disc image, usually the installer for a system or a program.",
       "If you already used it and will not need it again, delete it.")
@@ -901,13 +948,18 @@ def _root_components(path: str) -> list[str]:
 
 
 def components(node) -> list[str]:
-    """Path of a DirNode as a list of lowercased components."""
+    """Path of a DirNode as a list of lowercased components.
+
+    It climbs until it reaches the scanned root, whose name holds the full
+    path. The holder of a several-drive scan is not one, and has nothing
+    above it, so it contributes nothing.
+    """
     parts = []
-    while node.parent is not None:
+    while not node.is_root and node.parent is not None:
         parts.append(node.name.lower())
         node = node.parent
     parts.reverse()
-    return _root_components(node.name) + parts
+    return (_root_components(node.name) + parts) if node.is_root else parts
 
 
 def _applies(rule: Rule, comps: list[str]) -> bool:
@@ -929,19 +981,27 @@ def _candidates(name: str, parent_name: str) -> list[Rule]:
     return out
 
 
+def _top(node) -> bool:
+    """Whether the node carries a full path instead of a single name."""
+    return node.is_root or node.parent is None
+
+
 def match_dir(node) -> Rule | None:
     comps = None
-    if node.parent is None:
+    if _top(node):
         comps = components(node)
-        name = comps[-1] if comps else ""
+        if not comps:
+            return None
+        name = comps[-1]
         parent_name = comps[-2] if len(comps) > 1 else ""
     else:
         name = node.name.lower()
         parent = node.parent
-        if parent.parent is not None:
-            parent_name = parent.name.lower()
+        if _top(parent):
+            above = components(parent)
+            parent_name = above[-1] if above else ""
         else:
-            parent_name = (_root_components(parent.name) or [""])[-1]
+            parent_name = parent.name.lower()
     rules = _candidates(name, parent_name)
     if not rules:
         return None
